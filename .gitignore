@@ -1,0 +1,17 @@
+# Build output
+jira-tui
+jira-tui.exe
+
+# Go
+go.sum
+
+# macOS
+.DS_Store
+
+# Local cache (stored in ~ not project dir, but just in case)
+.jira_boards_cache.json
+
+# Editor
+.idea/
+.vscode/
+*.swp
