@@ -2,8 +2,6 @@
 jira-tui
 jira-tui.exe
 
-# Go
-go.sum
 
 # macOS
 .DS_Store

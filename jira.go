@@ -103,11 +103,8 @@ func (c *JiraClient) VerifyAuth() (User, error) {
 // paging through results 50 at a time until the API reports isLast=true.
 func (c *JiraClient) GetBoards() ([]Board, error) {
 	type boardPage struct {
-		StartAt    int  `json:"startAt"`
-		MaxResults int  `json:"maxResults"`
-		Total      int  `json:"total"`
-		IsLast     bool `json:"isLast"`
-		Values     []struct {
+		IsLast bool `json:"isLast"`
+		Values []struct {
 			ID       int    `json:"id"`
 			Name     string `json:"name"`
 			Location struct {
@@ -169,8 +166,8 @@ func (c *JiraClient) ResolveAccountID(email string) (string, error) {
 }
 
 // CreateIssue creates a single Jira issue and returns its key (e.g. "PROJ-42").
-func (c *JiraClient) CreateIssue(projectKey, issueType string, t Ticket, assigneeID string) (string, error) {
-	// Build labels array.
+// parentKey, when non-empty, sets the parent field (linking a child to an epic or issue).
+func (c *JiraClient) CreateIssue(projectKey, issueType string, t Ticket, assigneeID, parentKey string) (string, error) {
 	labelParts := make([]string, 0, len(t.Labels))
 	for _, l := range t.Labels {
 		l = strings.TrimSpace(l)
@@ -182,10 +179,10 @@ func (c *JiraClient) CreateIssue(projectKey, issueType string, t Ticket, assigne
 	}
 	labelsJSON := "[" + strings.Join(labelParts, ",") + "]"
 
-	summary, _ := json.Marshal(t.Title)
-	desc, _ := json.Marshal(t.Description)
-	pk, _ := json.Marshal(projectKey)
-	it, _ := json.Marshal(issueType)
+	summaryJSON, _ := json.Marshal(t.Title)
+	descJSON, _ := json.Marshal(t.Description)
+	projJSON, _ := json.Marshal(projectKey)
+	typeJSON, _ := json.Marshal(issueType)
 
 	assigneeClause := ""
 	if assigneeID != "" {
@@ -193,8 +190,16 @@ func (c *JiraClient) CreateIssue(projectKey, issueType string, t Ticket, assigne
 		assigneeClause = fmt.Sprintf(`,"assignee":{"accountId":%s}`, aid)
 	}
 
-	payload := fmt.Sprintf(`{"fields":{"project":{"key":%s},"summary":%s,"description":%s,"issuetype":{"name":%s},"labels":%s%s}}`,
-		pk, summary, desc, it, labelsJSON, assigneeClause)
+	parentClause := ""
+	if parentKey != "" {
+		pkJSON, _ := json.Marshal(parentKey)
+		parentClause = fmt.Sprintf(`,"parent":{"key":%s}`, pkJSON)
+	}
+
+	payload := fmt.Sprintf(
+		`{"fields":{"project":{"key":%s},"summary":%s,"description":%s,"issuetype":{"name":%s},"labels":%s%s%s}}`,
+		projJSON, summaryJSON, descJSON, typeJSON, labelsJSON, assigneeClause, parentClause,
+	)
 
 	data, err := c.postJSON("/rest/api/2/issue", payload)
 	if err != nil {
@@ -203,8 +208,47 @@ func (c *JiraClient) CreateIssue(projectKey, issueType string, t Ticket, assigne
 	var result struct {
 		Key string `json:"key"`
 	}
-	if err := json.Unmarshal(data, &result); err != nil {
-		return "", err
+	return result.Key, json.Unmarshal(data, &result)
+}
+
+// CreateEpic creates a Jira Epic and returns its key.
+// requester, when non-empty, is prepended to the description for tracking.
+// Attempts to set customfield_10011 (Epic Name); falls back without it if the
+// field doesn't exist on the target instance.
+func (c *JiraClient) CreateEpic(projectKey, title, desc, requester string) (string, error) {
+	if requester != "" {
+		if desc != "" {
+			desc = "Requester: " + requester + "\n\n" + desc
+		} else {
+			desc = "Requester: " + requester
+		}
 	}
-	return result.Key, nil
+
+	summaryJSON, _ := json.Marshal(title)
+	descJSON, _ := json.Marshal(desc)
+	projJSON, _ := json.Marshal(projectKey)
+	epicNameJSON, _ := json.Marshal(title)
+
+	// Try with Epic Name custom field first (required on older Jira Cloud configs).
+	payload := fmt.Sprintf(
+		`{"fields":{"project":{"key":%s},"summary":%s,"description":%s,"issuetype":{"name":"Epic"},"customfield_10011":%s}}`,
+		projJSON, summaryJSON, descJSON, epicNameJSON,
+	)
+	data, err := c.postJSON("/rest/api/2/issue", payload)
+	if err != nil {
+		// Retry without the custom field — some instances don't require it.
+		payload = fmt.Sprintf(
+			`{"fields":{"project":{"key":%s},"summary":%s,"description":%s,"issuetype":{"name":"Epic"}}}`,
+			projJSON, summaryJSON, descJSON,
+		)
+		data, err = c.postJSON("/rest/api/2/issue", payload)
+		if err != nil {
+			return "", err
+		}
+	}
+
+	var result struct {
+		Key string `json:"key"`
+	}
+	return result.Key, json.Unmarshal(data, &result)
 }

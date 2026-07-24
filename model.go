@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"fmt"
 	"strings"
 	"time"
@@ -16,13 +17,17 @@ import (
 type screen int
 
 const (
-	screenAuth     screen = iota // credential entry
-	screenVerify                 // verifying creds (spinner)
-	screenBoards                 // board list / manual key entry
-	screenSettings               // assignee fallback + issue type
-	screenTickets                // ticket list + preview
-	screenCreating               // creation progress
-	screenDone                   // results summary
+	screenAuth          screen = iota // credential entry
+	screenVerify                      // verifying creds (spinner)
+	screenBoards                      // board list / manual key entry
+	screenSettings                    // assignee fallback + issue type
+	screenTickets                     // ticket list + preview
+	screenCreating                    // creation progress
+	screenDone                        // results summary
+	screenEpicSetup                   // enter epic title / desc / requester
+	screenEpicDupWarn                 // confirm when a matching epic already exists
+	screenDupCheck                    // per-ticket duplicate decision
+	screenShowTickets                 // browse local history
 )
 
 // ── Messages ─────────────────────────────────────────────────────────────────
@@ -37,7 +42,6 @@ type boardsLoadedMsg struct {
 	err    error
 }
 
-// boardsSyncedMsg is sent when the background board refresh finishes.
 type boardsSyncedMsg struct {
 	boards []Board
 	err    error
@@ -49,36 +53,59 @@ type ticketCreatedMsg struct {
 	err   error
 }
 
+type epicCreatedMsg struct {
+	key string
+	url string
+	err error
+}
+
+type historyLoadedMsg struct {
+	records []TicketRecord
+	err     error
+}
+
+// ── dupCheckItem holds a ticket whose title+description matches a history record. ─
+
+type dupCheckItem struct {
+	ticketIdx    int
+	ticket       Ticket
+	dups         []TicketRecord
+	createAnyway bool // default false = skip
+}
+
 // ── Model ─────────────────────────────────────────────────────────────────────
 
 var issueTypes = []string{"Task", "Story", "Bug", "Subtask", "Epic"}
 
 type model struct {
+	// Core
 	screen  screen
+	mode    appMode
 	config  Config
 	tickets []Ticket
+	db      *sql.DB
 	width   int
 	height  int
 
 	// Jira
-	client       *JiraClient
-	user         User
-	boards       []Board
+	client        *JiraClient
+	user          User
+	boards        []Board
 	selectedBoard Board
-	projectKey   string
+	projectKey    string
 
 	// Auth inputs
 	authInputs   []textinput.Model
 	focusedInput int
 
 	// Boards
-	boardCursor     int
-	boardOffset     int // first visible index in filtered list
-	boardSearch     textinput.Model
-	manualKeyMode   bool
-	manualKeyInput  textinput.Model
-	boardsSyncing   bool      // background refresh in progress
-	boardsCacheAge  time.Time // when the cache was last written
+	boardCursor    int
+	boardOffset    int
+	boardSearch    textinput.Model
+	manualKeyMode  bool
+	manualKeyInput textinput.Model
+	boardsSyncing  bool
+	boardsCacheAge time.Time
 
 	// Settings (0 = assignee fallback, 1 = issue type)
 	settingsCursor   int
@@ -90,9 +117,30 @@ type model struct {
 	selectedTickets map[int]bool
 
 	// Creation
-	creating  int // index of ticket currently being created
-	results   []CreateResult
-	progress  float64
+	creating    int // index of ticket currently being created
+	results     []CreateResult
+	progress    float64
+	epicPending bool // waiting for epic creation before starting tickets
+
+	// Epic setup (screenEpicSetup)
+	epicInputs    []textinput.Model
+	epicFocus     int
+	epicTitle     string
+	epicDesc      string
+	epicReq       string
+	epicKey       string // set after successful creation
+	epicURL       string
+	existingEpics []TicketRecord // populated when same-title epic found
+
+	// Dup check (screenDupCheck)
+	dupItems  []dupCheckItem
+	dupCursor int
+
+	// Show tickets (screenShowTickets)
+	histRecords []TicketRecord
+	histCursor  int
+	histOffset  int
+	histLoading bool
 
 	// UI helpers
 	spinner    spinner.Model
@@ -103,24 +151,23 @@ type model struct {
 
 // ── Constructor ───────────────────────────────────────────────────────────────
 
-func newModel(cfg Config, tickets []Ticket) model {
-	// Auth inputs: URL, email, token
-	inputs := make([]textinput.Model, 3)
-	placeholders := []string{
+func newModel(cfg Config, tickets []Ticket, db *sql.DB, mode appMode) model {
+	// Auth inputs: URL, email, token.
+	authInps := make([]textinput.Model, 3)
+	for i, ph := range []string{
 		"https://company.atlassian.net",
 		"you@company.com",
 		"API token (input hidden)",
-	}
-	for i := range inputs {
+	} {
 		t := textinput.New()
 		t.CharLimit = 256
-		t.Placeholder = placeholders[i]
-		inputs[i] = t
+		t.Placeholder = ph
+		authInps[i] = t
 	}
-	inputs[0].SetValue(cfg.BaseURL)
-	inputs[1].SetValue(cfg.Email)
-	inputs[2].EchoMode = textinput.EchoPassword
-	inputs[2].SetValue(cfg.APIToken)
+	authInps[0].SetValue(cfg.BaseURL)
+	authInps[1].SetValue(cfg.Email)
+	authInps[2].EchoMode = textinput.EchoPassword
+	authInps[2].SetValue(cfg.APIToken)
 
 	manualInput := textinput.New()
 	manualInput.Placeholder = "e.g. FINOPS"
@@ -129,6 +176,15 @@ func newModel(cfg Config, tickets []Ticket) model {
 	boardSearch := textinput.New()
 	boardSearch.Placeholder = "Search boards…"
 	boardSearch.CharLimit = 100
+
+	// Epic setup inputs: title, description, requester.
+	epicInps := make([]textinput.Model, 3)
+	for i, ph := range []string{"Epic title", "Description", "Requester name or email"} {
+		t := textinput.New()
+		t.CharLimit = 256
+		t.Placeholder = ph
+		epicInps[i] = t
+	}
 
 	s := spinner.New()
 	s.Spinner = spinner.Dot
@@ -150,15 +206,25 @@ func newModel(cfg Config, tickets []Ticket) model {
 
 	m := model{
 		config:           cfg,
+		mode:             mode,
+		db:               db,
 		tickets:          tickets,
-		authInputs:       inputs,
+		authInputs:       authInps,
 		manualKeyInput:   manualInput,
 		boardSearch:      boardSearch,
+		epicInputs:       epicInps,
 		spinner:          s,
 		selectedTickets:  selected,
 		assigneeFallback: af,
 		issueType:        it,
 		results:          make([]CreateResult, len(tickets)),
+	}
+
+	// --show-tickets: skip Jira auth entirely.
+	if mode == modeShow {
+		m.screen = screenShowTickets
+		m.histLoading = true
+		return m
 	}
 
 	hasCreds := cfg.BaseURL != "" && cfg.Email != "" && cfg.APIToken != ""
@@ -169,7 +235,7 @@ func newModel(cfg Config, tickets []Ticket) model {
 		m.client = newJiraClient(cfg.BaseURL, cfg.Email, cfg.APIToken)
 	} else {
 		m.screen = screenAuth
-		inputs[0].Focus()
+		authInps[0].Focus()
 	}
 
 	return m
@@ -178,6 +244,9 @@ func newModel(cfg Config, tickets []Ticket) model {
 // ── Init ──────────────────────────────────────────────────────────────────────
 
 func (m model) Init() tea.Cmd {
+	if m.mode == modeShow {
+		return tea.Batch(m.spinner.Tick, m.cmdLoadHistory())
+	}
 	cmds := []tea.Cmd{textinput.Blink, m.spinner.Tick}
 	if m.screen == screenVerify {
 		cmds = append(cmds, m.cmdVerifyAuth())
@@ -203,7 +272,6 @@ func (m model) cmdLoadBoards() tea.Cmd {
 	}
 }
 
-// cmdSyncBoards fetches boards in the background and returns boardsSyncedMsg.
 func (m model) cmdSyncBoards() tea.Cmd {
 	client := m.client
 	return func() tea.Msg {
@@ -219,6 +287,7 @@ func (m model) cmdCreateTicket(index int) tea.Cmd {
 	issueType := m.issueType
 	fallback := m.assigneeFallback
 	requesterID := m.user.AccountID
+	parentKey := m.epicKey // empty in normal mode
 
 	return func() tea.Msg {
 		assigneeID := ""
@@ -229,8 +298,31 @@ func (m model) cmdCreateTicket(index int) tea.Cmd {
 		if assigneeID == "" && fallback == "requester" {
 			assigneeID = requesterID
 		}
-		key, err := client.CreateIssue(projectKey, issueType, ticket, assigneeID)
+		key, err := client.CreateIssue(projectKey, issueType, ticket, assigneeID, parentKey)
 		return ticketCreatedMsg{index: index, key: key, err: err}
+	}
+}
+
+func (m model) cmdCreateEpic() tea.Cmd {
+	client := m.client
+	projectKey := m.projectKey
+	title, desc, req := m.epicTitle, m.epicDesc, m.epicReq
+
+	return func() tea.Msg {
+		key, err := client.CreateEpic(projectKey, title, desc, req)
+		url := ""
+		if err == nil {
+			url = client.baseURL + "/browse/" + key
+		}
+		return epicCreatedMsg{key: key, url: url, err: err}
+	}
+}
+
+func (m model) cmdLoadHistory() tea.Cmd {
+	db := m.db
+	return func() tea.Msg {
+		records, err := allTickets(db)
+		return historyLoadedMsg{records: records, err: err}
 	}
 }
 
@@ -260,26 +352,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.loading = false
 			m.err = fmt.Errorf("authentication failed — check URL, email, and token")
 			m.screen = screenAuth
-			focusCmd := m.authInputs[m.focusedInput].Focus()
-			return m, focusCmd
+			return m, m.authInputs[m.focusedInput].Focus()
 		}
 		m.user = msg.user
-		// Auto-save credentials.
 		m.config.BaseURL = m.client.baseURL
 		m.config.Email = m.client.email
 		m.config.APIToken = m.client.token
 		_ = saveConfig(m.config)
-		// Advance to board screen — use cache if available.
 		m.screen = screenBoards
 		if cached, cacheAge, ok := loadBoardsCache(m.client.baseURL); ok {
-			// Show cached boards immediately; refresh in background.
 			m.boards = cached
 			m.boardsCacheAge = cacheAge
 			m.loading = false
 			m.boardsSyncing = true
 			return m, tea.Batch(m.cmdSyncBoards(), m.boardSearch.Focus())
 		}
-		// No cache — show spinner until first load completes.
 		m.loading = true
 		m.loadingMsg = "Loading all boards…"
 		return m, m.cmdLoadBoards()
@@ -301,7 +388,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.boards = msg.boards
 			m.boardsCacheAge = time.Now()
 			_ = saveBoardsCache(m.client.baseURL, msg.boards)
-			// Clamp cursor in case list shrank.
 			filtered := m.filteredBoards()
 			if m.boardCursor >= len(filtered) {
 				m.boardCursor = maxInt(0, len(filtered)-1)
@@ -310,14 +396,64 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case epicCreatedMsg:
+		m.epicPending = false
+		if msg.err != nil {
+			m.err = fmt.Errorf("failed to create epic: %v", msg.err)
+			m.screen = screenEpicSetup
+			return m, m.epicInputs[0].Focus()
+		}
+		m.epicKey = msg.key
+		m.epicURL = msg.url
+		// Save epic to local history.
+		_ = insertTicket(m.db, TicketRecord{
+			Title:       m.epicTitle,
+			Description: m.epicDesc,
+			JiraKey:     msg.key,
+			URL:         msg.url,
+			CreatedAt:   time.Now(),
+			TicketType:  "Epic",
+			ProjectKey:  m.projectKey,
+		})
+		// Start creating child tickets, or finish if none are selected.
+		first := m.firstSelected()
+		if first >= 0 {
+			m.creating = first
+			return m, m.cmdCreateTicket(first)
+		}
+		m.progress = 1.0
+		m.screen = screenDone
+		return m, nil
+
 	case ticketCreatedMsg:
-		m.results[msg.index] = CreateResult{
+		result := CreateResult{
 			Ticket: m.tickets[msg.index],
 			Key:    msg.key,
 			URL:    m.config.BaseURL + "/browse/" + msg.key,
 			Err:    msg.err,
 		}
-		// Find next selected ticket.
+		m.results[msg.index] = result
+		if msg.err == nil && msg.key != "" {
+			parentKey, parentURL := "", ""
+			if m.mode == modeEpic {
+				parentKey = m.epicKey
+				parentURL = m.epicURL
+			}
+			_ = insertTicket(m.db, TicketRecord{
+				Title:       m.tickets[msg.index].Title,
+				Description: m.tickets[msg.index].Description,
+				JiraKey:     msg.key,
+				URL:         result.URL,
+				CreatedAt:   time.Now(),
+				TicketType:  m.issueType,
+				ParentKey:   parentKey,
+				ParentURL:   parentURL,
+				ProjectKey:  m.projectKey,
+				Assignee:    m.tickets[msg.index].Assignee,
+				Labels:      m.tickets[msg.index].Labels,
+			})
+		}
+		// Find the next selected ticket to create.
 		next := -1
 		for i := msg.index + 1; i < len(m.tickets); i++ {
 			if m.selectedTickets[i] {
@@ -333,10 +469,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.progress = 1.0
 		m.screen = screenDone
 		return m, nil
+
+	case historyLoadedMsg:
+		m.histLoading = false
+		if msg.err != nil {
+			m.err = msg.err
+		} else {
+			m.histRecords = msg.records
+		}
+		return m, nil
 	}
 
 	return m, nil
 }
+
+// ── handleKey dispatch ────────────────────────────────────────────────────────
 
 func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch m.screen {
@@ -348,6 +495,14 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleSettingsKey(msg)
 	case screenTickets:
 		return m.handleTicketsKey(msg)
+	case screenEpicSetup:
+		return m.handleEpicSetupKey(msg)
+	case screenEpicDupWarn:
+		return m.handleEpicDupWarnKey(msg)
+	case screenDupCheck:
+		return m.handleDupCheckKey(msg)
+	case screenShowTickets:
+		return m.handleShowTicketsKey(msg)
 	case screenDone:
 		return m, tea.Quit
 	}
@@ -403,7 +558,6 @@ func (m model) handleAuthKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // ── Board keys ────────────────────────────────────────────────────────────────
 
-// filteredBoards returns boards matching the current search query.
 func (m model) filteredBoards() []Board {
 	query := strings.ToLower(strings.TrimSpace(m.boardSearch.Value()))
 	if query == "" {
@@ -419,9 +573,7 @@ func (m model) filteredBoards() []Board {
 	return out
 }
 
-// boardPageSize returns how many board rows fit given the current terminal height.
 func (m model) boardPageSize() int {
-	// Reserve rows: title + sub + search + pagination + footer + borders/padding
 	n := m.height - 12
 	if n < 4 {
 		n = 4
@@ -437,7 +589,6 @@ func (m model) handleBoardsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// ── Manual project-key entry ──────────────────────────────────────────────
 	if m.manualKeyMode {
 		var cmd tea.Cmd
 		switch msg.String() {
@@ -461,7 +612,6 @@ func (m model) handleBoardsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	filtered := m.filteredBoards()
 	pageSize := m.boardPageSize()
 
-	// Clamp cursor to filtered length.
 	if m.boardCursor >= len(filtered) {
 		m.boardCursor = maxInt(0, len(filtered)-1)
 	}
@@ -471,7 +621,6 @@ func (m model) handleBoardsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.boardCursor > 0 {
 			m.boardCursor--
 		}
-		// Scroll up if cursor moved above the visible window.
 		if m.boardCursor < m.boardOffset {
 			m.boardOffset = m.boardCursor
 		}
@@ -480,7 +629,6 @@ func (m model) handleBoardsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.boardCursor < len(filtered)-1 {
 			m.boardCursor++
 		}
-		// Scroll down if cursor moved below the visible window.
 		if m.boardCursor >= m.boardOffset+pageSize {
 			m.boardOffset = m.boardCursor - pageSize + 1
 		}
@@ -514,24 +662,19 @@ func (m model) handleBoardsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case "r":
-		// Trigger a background refresh when the search box is empty and not already syncing.
-		// Otherwise fall through to the default search-box handler so 'r' is typed normally.
 		if m.boardSearch.Value() == "" && !m.boardsSyncing {
 			m.boardsSyncing = true
 			return m, m.cmdSyncBoards()
 		}
-		prevValR := m.boardSearch.Value()
-		var cmdR tea.Cmd
-		m.boardSearch, cmdR = m.boardSearch.Update(msg)
-		if m.boardSearch.Value() != prevValR {
-			m.boardCursor = 0
-			m.boardOffset = 0
+		prevVal := m.boardSearch.Value()
+		var cmd tea.Cmd
+		m.boardSearch, cmd = m.boardSearch.Update(msg)
+		if m.boardSearch.Value() != prevVal {
+			m.boardCursor, m.boardOffset = 0, 0
 		}
-		return m, cmdR
+		return m, cmd
 
 	case "ctrl+m", "m":
-		// Only treat bare 'm' as manual-mode trigger when the search box is empty,
-		// otherwise it's a search character — fall through to the search handler.
 		if m.boardSearch.Value() == "" {
 			m.manualKeyMode = true
 			m.manualKeyInput.SetValue("")
@@ -541,14 +684,11 @@ func (m model) handleBoardsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		fallthrough
 
 	default:
-		// Route every other keystroke into the search box.
 		prevVal := m.boardSearch.Value()
 		var cmd tea.Cmd
 		m.boardSearch, cmd = m.boardSearch.Update(msg)
-		// Reset cursor/offset whenever the query changes.
 		if m.boardSearch.Value() != prevVal {
-			m.boardCursor = 0
-			m.boardOffset = 0
+			m.boardCursor, m.boardOffset = 0, 0
 		}
 		return m, cmd
 	}
@@ -587,6 +727,10 @@ func (m model) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.issueType = nextIn(issueTypes, m.issueType)
 		}
 	case "enter":
+		if m.mode == modeEpic {
+			m.screen = screenEpicSetup
+			return m, m.epicInputs[0].Focus()
+		}
 		m.screen = screenTickets
 	}
 	return m, nil
@@ -612,32 +756,228 @@ func (m model) handleTicketsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.selectedTickets[i] = !all
 		}
 	case "enter":
-		if m.countSelected() == 0 {
+		// In epic mode we can proceed with zero selected tickets (epic-only).
+		if m.mode != modeEpic && m.countSelected() == 0 {
 			return m, nil
 		}
 		m.config.AssigneeFallback = m.assigneeFallback
 		m.config.IssueType = m.issueType
 		_ = saveConfig(m.config)
-
-		// Find first selected ticket.
-		first := -1
-		for i := range m.tickets {
-			if m.selectedTickets[i] {
-				first = i
-				break
-			}
-		}
-		if first < 0 {
-			return m, nil
-		}
-		m.screen = screenCreating
-		m.creating = first
-		return m, m.cmdCreateTicket(first)
+		return m.checkDupsAndProceed()
 	}
 	return m, nil
 }
 
-// ── View ──────────────────────────────────────────────────────────────────────
+// checkDupsAndProceed queries the DB for duplicates across all selected tickets.
+// If any are found it transitions to screenDupCheck; otherwise starts creation.
+func (m model) checkDupsAndProceed() (model, tea.Cmd) {
+	var items []dupCheckItem
+	for i := range m.tickets {
+		if !m.selectedTickets[i] {
+			continue
+		}
+		dups, _ := findDuplicates(m.db, m.tickets[i].Title, m.tickets[i].Description)
+		if len(dups) > 0 {
+			items = append(items, dupCheckItem{
+				ticketIdx:    i,
+				ticket:       m.tickets[i],
+				dups:         dups,
+				createAnyway: false,
+			})
+		}
+	}
+	if len(items) > 0 {
+		m.dupItems = items
+		m.dupCursor = 0
+		m.screen = screenDupCheck
+		return m, nil
+	}
+	return m.startCreation()
+}
+
+// startCreation begins the screenCreating flow.
+func (m model) startCreation() (model, tea.Cmd) {
+	m.screen = screenCreating
+	if m.mode == modeEpic {
+		m.epicPending = true
+		return m, m.cmdCreateEpic()
+	}
+	first := m.firstSelected()
+	if first < 0 {
+		return m, nil
+	}
+	m.creating = first
+	return m, m.cmdCreateTicket(first)
+}
+
+// firstSelected returns the index of the first selected ticket, or -1.
+func (m model) firstSelected() int {
+	for i := range m.tickets {
+		if m.selectedTickets[i] {
+			return i
+		}
+	}
+	return -1
+}
+
+// ── Epic setup keys ───────────────────────────────────────────────────────────
+
+func (m model) handleEpicSetupKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	var cmds []tea.Cmd
+	switch msg.String() {
+	case "tab", "down":
+		m.epicInputs[m.epicFocus].Blur()
+		m.epicFocus = (m.epicFocus + 1) % len(m.epicInputs)
+		cmds = append(cmds, m.epicInputs[m.epicFocus].Focus())
+
+	case "shift+tab", "up":
+		m.epicInputs[m.epicFocus].Blur()
+		m.epicFocus = (m.epicFocus - 1 + len(m.epicInputs)) % len(m.epicInputs)
+		cmds = append(cmds, m.epicInputs[m.epicFocus].Focus())
+
+	case "enter":
+		if m.epicFocus < len(m.epicInputs)-1 {
+			m.epicInputs[m.epicFocus].Blur()
+			m.epicFocus++
+			cmds = append(cmds, m.epicInputs[m.epicFocus].Focus())
+		} else {
+			title := strings.TrimSpace(m.epicInputs[0].Value())
+			if title == "" {
+				m.err = fmt.Errorf("epic title is required")
+				break
+			}
+			m.err = nil
+			m.epicTitle = title
+			m.epicDesc = strings.TrimSpace(m.epicInputs[1].Value())
+			m.epicReq = strings.TrimSpace(m.epicInputs[2].Value())
+
+			existing, _ := findEpicsByTitle(m.db, title)
+			if len(existing) > 0 {
+				m.existingEpics = existing
+				m.screen = screenEpicDupWarn
+				return m, nil
+			}
+			m.screen = screenTickets
+			return m, nil
+		}
+
+	case "esc":
+		m.screen = screenSettings
+		return m, nil
+
+	default:
+		var cmd tea.Cmd
+		m.epicInputs[m.epicFocus], cmd = m.epicInputs[m.epicFocus].Update(msg)
+		cmds = append(cmds, cmd)
+	}
+	return m, tea.Batch(cmds...)
+}
+
+// ── Epic dup-warn keys ────────────────────────────────────────────────────────
+
+func (m model) handleEpicDupWarnKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y", "Y":
+		m.screen = screenTickets
+		return m, nil
+	case "n", "N", "esc":
+		m.screen = screenEpicSetup
+		return m, m.epicInputs[0].Focus()
+	}
+	return m, nil
+}
+
+// ── Dup-check keys ────────────────────────────────────────────────────────────
+
+func (m model) handleDupCheckKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "up", "k":
+		if m.dupCursor > 0 {
+			m.dupCursor--
+		}
+	case "down", "j":
+		if m.dupCursor < len(m.dupItems)-1 {
+			m.dupCursor++
+		}
+	case " ", "c":
+		m.dupItems[m.dupCursor].createAnyway = !m.dupItems[m.dupCursor].createAnyway
+	case "s":
+		m.dupItems[m.dupCursor].createAnyway = false
+	case "enter":
+		// Apply skip decisions then proceed.
+		for _, item := range m.dupItems {
+			if !item.createAnyway {
+				m.selectedTickets[item.ticketIdx] = false
+			}
+		}
+		return m.startCreation()
+	case "esc":
+		m.screen = screenTickets
+	}
+	return m, nil
+}
+
+// ── Show-tickets keys ─────────────────────────────────────────────────────────
+
+func (m model) handleShowTicketsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.histLoading {
+		return m, nil
+	}
+	switch msg.String() {
+	case "up", "k":
+		if m.histCursor > 0 {
+			m.histCursor--
+			if m.histCursor < m.histOffset {
+				m.histOffset = m.histCursor
+			}
+		}
+	case "down", "j":
+		if m.histCursor < len(m.histRecords)-1 {
+			m.histCursor++
+			ps := m.histPageSize()
+			if m.histCursor >= m.histOffset+ps {
+				m.histOffset = m.histCursor - ps + 1
+			}
+		}
+	case "pgup", "ctrl+b":
+		ps := m.histPageSize()
+		m.histCursor -= ps
+		if m.histCursor < 0 {
+			m.histCursor = 0
+		}
+		m.histOffset -= ps
+		if m.histOffset < 0 {
+			m.histOffset = 0
+		}
+	case "pgdown", "ctrl+f":
+		ps := m.histPageSize()
+		m.histCursor += ps
+		if m.histCursor >= len(m.histRecords) {
+			m.histCursor = maxInt(0, len(m.histRecords)-1)
+		}
+		m.histOffset += ps
+		maxOff := maxInt(0, len(m.histRecords)-ps)
+		if m.histOffset > maxOff {
+			m.histOffset = maxOff
+		}
+	case "q", "esc", "enter":
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+func (m model) histPageSize() int {
+	n := m.height - 10
+	if n < 4 {
+		n = 4
+	}
+	if n > 30 {
+		n = 30
+	}
+	return n
+}
+
+// ── View dispatch ─────────────────────────────────────────────────────────────
 
 func (m model) View() string {
 	if m.width == 0 {
@@ -661,6 +1001,14 @@ func (m model) View() string {
 		return m.viewCreating()
 	case screenDone:
 		return m.viewDone()
+	case screenEpicSetup:
+		return m.viewEpicSetup()
+	case screenEpicDupWarn:
+		return m.viewEpicDupWarn()
+	case screenDupCheck:
+		return m.viewDupCheck()
+	case screenShowTickets:
+		return m.viewShowTickets()
 	}
 	return ""
 }
@@ -689,7 +1037,6 @@ func (m model) viewAuth() string {
 	}
 
 	hint := subtitleStyle.Render("Create a token at https://id.atlassian.com/manage-profile/security/api-tokens")
-
 	footer := footerStyle.Width(48).Render("Tab/↑↓ move field  •  Enter next/connect  •  Ctrl+C quit")
 
 	body := lipgloss.JoinVertical(lipgloss.Left,
@@ -714,7 +1061,6 @@ func (m model) viewBoards() string {
 
 	title := titleStyle.Render("Select a Board")
 
-	// Sub-line: user + optional sync badge on the right.
 	userStr := "Authenticated as " + m.user.DisplayName
 	var syncBadge string
 	if m.boardsSyncing {
@@ -724,10 +1070,8 @@ func (m model) viewBoards() string {
 	}
 	sub := subtitleStyle.Render(userStr) + syncBadge
 
-	// Search bar (always shown, always focused).
 	searchBar := focusedInputStyle.Width(w - 8).Render(m.boardSearch.View())
 
-	// Filter + paginate.
 	filtered := m.filteredBoards()
 	pageSize := m.boardPageSize()
 
@@ -741,7 +1085,6 @@ func (m model) viewBoards() string {
 		end = len(filtered)
 	}
 
-	// Pagination indicator.
 	var pageInfo string
 	switch {
 	case len(m.boards) == 0:
@@ -754,7 +1097,6 @@ func (m model) viewBoards() string {
 		pageInfo = subtitleStyle.Render(fmt.Sprintf("%d board(s)", len(filtered)))
 	}
 
-	// Board rows.
 	var rows []string
 	for i := offset; i < end; i++ {
 		b := filtered[i]
@@ -769,7 +1111,6 @@ func (m model) viewBoards() string {
 		rows = append(rows, row)
 	}
 
-	// Scroll arrows.
 	var scrollHint string
 	if offset > 0 && end < len(filtered) {
 		scrollHint = dimStyle.Render("  ↑ more above  ·  ↓ more below")
@@ -779,7 +1120,6 @@ func (m model) viewBoards() string {
 		scrollHint = dimStyle.Render("  ↓ more below")
 	}
 
-	// Manual key entry overlay.
 	manual := ""
 	if m.manualKeyMode {
 		manual = "\n" + subtitleStyle.Render("Enter project key:") + "\n" +
@@ -792,12 +1132,7 @@ func (m model) viewBoards() string {
 		errLine = "\n" + errorStyle.Render("⚠  "+m.err.Error())
 	}
 
-	footerText := "↑↓/jk navigate  •  PgUp/PgDn jump  •  Type to search  •  Esc clear  •  Enter select"
-	if len(m.boards) == 0 || m.manualKeyMode {
-		footerText = "Enter project key  •  Esc cancel  •  Ctrl+C quit"
-	} else {
-		footerText += "  •  M manual key  •  R refresh"
-	}
+	footerText := "↑↓/jk navigate  •  PgUp/PgDn jump  •  Type to search  •  Enter select  •  M manual key  •  R refresh"
 	footer := footerStyle.Width(w).Render(footerText)
 
 	parts := []string{title, sub, "", searchBar, "", pageInfo}
@@ -839,10 +1174,19 @@ func (m model) viewSettings() string {
 	)
 	itVal := fmt.Sprintf("‹ %s ›", m.issueType)
 
-	af := rowStyle(0).Render("  Assignee fallback  ") + afVal
-	it := rowStyle(1).Render("  Issue type         ") + itVal
+	itLabel := "  Issue type         "
+	if m.mode == modeEpic {
+		itLabel = "  Child issue type   "
+	}
 
-	footer := footerStyle.Width(54).Render("↑↓ navigate  •  ←→/Space toggle  •  Enter continue  •  Ctrl+C quit")
+	af := rowStyle(0).Render("  Assignee fallback  ") + afVal
+	it := rowStyle(1).Render(itLabel) + itVal
+
+	enterHint := "Enter continue"
+	if m.mode == modeEpic {
+		enterHint = "Enter set up epic"
+	}
+	footer := footerStyle.Width(58).Render(fmt.Sprintf("↑↓ navigate  •  ←→/Space toggle  •  %s  •  Ctrl+C quit", enterHint))
 
 	body := lipgloss.JoinVertical(lipgloss.Left,
 		title, sub, "", af, "", it, "", footer)
@@ -857,7 +1201,6 @@ func (m model) viewSettings() string {
 func (m model) viewTickets() string {
 	halfW := m.width/2 - 3
 
-	// Left: ticket list
 	var rows []string
 	for i, t := range m.tickets {
 		checked := checkStyle.Render("☑")
@@ -876,12 +1219,15 @@ func (m model) viewTickets() string {
 	}
 
 	nSel := m.countSelected()
-	listHeader := titleStyle.Render(fmt.Sprintf("Tickets  %s/%d",
-		successStyle.Render(fmt.Sprintf("%d", nSel)), len(m.tickets)))
+	headerText := "Tickets"
+	if m.mode == modeEpic && m.epicTitle != "" {
+		headerText = "Subtasks for: " + truncate(m.epicTitle, 28)
+	}
+	listHeader := titleStyle.Render(fmt.Sprintf("%s  %s/%d",
+		headerText, successStyle.Render(fmt.Sprintf("%d", nSel)), len(m.tickets)))
 	leftPanel := panelStyle.Width(halfW).Height(m.height - 6).Render(
 		lipgloss.JoinVertical(lipgloss.Left, listHeader, "", strings.Join(rows, "\n")))
 
-	// Right: preview
 	var previewLines []string
 	if m.ticketCursor < len(m.tickets) {
 		t := m.tickets[m.ticketCursor]
@@ -890,7 +1236,6 @@ func (m model) viewTickets() string {
 			"",
 		)
 		if t.Description != "" {
-			// Wrap description manually
 			words := strings.Fields(t.Description)
 			line := ""
 			maxW := halfW - 4
@@ -937,6 +1282,114 @@ func (m model) viewTickets() string {
 	return lipgloss.JoinVertical(lipgloss.Left, top, footer)
 }
 
+// ── Dup-check view ────────────────────────────────────────────────────────────
+
+func (m model) viewDupCheck() string {
+	var rows []string
+	for i, item := range m.dupItems {
+		cursor := "  "
+		if i == m.dupCursor {
+			cursor = cursorStyle.Render("▶ ")
+		}
+
+		action := errorStyle.Render("[SKIP]   ")
+		if item.createAnyway {
+			action = successStyle.Render("[CREATE] ")
+		}
+
+		titleLine := action + truncate(item.ticket.Title, 46)
+		dupInfo := ""
+		if len(item.dups) > 0 {
+			d := item.dups[0]
+			dupInfo = "     " + dimStyle.Render(fmt.Sprintf("existing: %s  created %s",
+				d.JiraKey, d.CreatedAt.Format("2006-01-02")))
+		}
+
+		rows = append(rows, cursor+titleLine)
+		if dupInfo != "" {
+			rows = append(rows, dupInfo)
+		}
+		rows = append(rows, "")
+	}
+
+	w := clamp(m.width-8, 64, 90)
+	footer := footerStyle.Width(w).Render(
+		"↑↓/jk navigate  •  Space/C create anyway  •  S skip  •  Enter proceed  •  Esc back")
+
+	body := lipgloss.JoinVertical(lipgloss.Left,
+		titleStyle.Render("Duplicate Tickets Found"),
+		subtitleStyle.Render("These tickets already exist in history — skip or create anyway."),
+		"",
+		strings.Join(rows, "\n"),
+		footer,
+	)
+
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center,
+		panelStyle.Width(w).Render(body))
+}
+
+// ── Epic-setup view ───────────────────────────────────────────────────────────
+
+func (m model) viewEpicSetup() string {
+	labels := []string{"Epic Title", "Description", "Requester"}
+	var rows []string
+	for i, inp := range m.epicInputs {
+		style := blurredInputStyle
+		if i == m.epicFocus {
+			style = focusedInputStyle
+		}
+		rows = append(rows, subtitleStyle.Render(labels[i])+"\n"+style.Width(46).Render(inp.View()))
+	}
+
+	errLine := ""
+	if m.err != nil {
+		errLine = "\n" + errorStyle.Render("⚠  "+m.err.Error())
+	}
+
+	footer := footerStyle.Width(54).Render(
+		"Tab/↑↓ move field  •  Enter next/confirm  •  Esc back  •  Ctrl+C quit")
+
+	body := lipgloss.JoinVertical(lipgloss.Left,
+		titleStyle.Render("Create Epic"),
+		subtitleStyle.Render(fmt.Sprintf("Project: %s", m.projectKey)),
+		"",
+		strings.Join(rows, "\n\n"),
+		errLine,
+		"",
+		footer,
+	)
+
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center,
+		panelStyle.Width(54).Render(body))
+}
+
+// ── Epic-dup-warn view ────────────────────────────────────────────────────────
+
+func (m model) viewEpicDupWarn() string {
+	var rows []string
+	for _, r := range m.existingEpics {
+		rows = append(rows, "  "+keyStyle.Render(r.JiraKey)+"  "+
+			truncate(r.Title, 36)+"  "+
+			dimStyle.Render(r.CreatedAt.Format("2006-01-02")))
+	}
+
+	w := clamp(m.width-8, 52, 76)
+	body := lipgloss.JoinVertical(lipgloss.Left,
+		titleStyle.Render("Epic Already Exists"),
+		"",
+		subtitleStyle.Render("An epic with this title was already created:"),
+		"",
+		strings.Join(rows, "\n"),
+		"",
+		subtitleStyle.Render("Create another epic anyway?"),
+		"",
+		footerStyle.Width(w).Render("[Y] Yes, create  •  [N] Cancel  •  Ctrl+C quit"),
+	)
+
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center,
+		panelStyle.Width(w).Render(body))
+}
+
 // ── Creating view ─────────────────────────────────────────────────────────────
 
 func (m model) viewCreating() string {
@@ -944,6 +1397,22 @@ func (m model) viewCreating() string {
 	bar := progressBar(44, m.progress) + fmt.Sprintf("  %d%%", int(m.progress*100))
 
 	var rows []string
+
+	// Epic row (epic mode only).
+	if m.mode == modeEpic {
+		var epicStatus string
+		switch {
+		case m.epicPending:
+			epicStatus = m.spinner.View() + " creating epic…   "
+		case m.epicKey != "":
+			epicStatus = successStyle.Render(fmt.Sprintf("✓ %-12s", m.epicKey))
+		default:
+			epicStatus = errorStyle.Render("✗ epic failed     ")
+		}
+		rows = append(rows, "  "+epicStatus+"  "+
+			labelStyle.Render("EPIC")+"  "+truncate(m.epicTitle, 36))
+	}
+
 	for i, t := range m.tickets {
 		if !m.selectedTickets[i] {
 			continue
@@ -955,7 +1424,7 @@ func (m model) viewCreating() string {
 			status = successStyle.Render(fmt.Sprintf("✓ %-12s", r.Key))
 		case r.Err != nil:
 			status = errorStyle.Render("✗ failed      ")
-		case i == m.creating:
+		case i == m.creating && !m.epicPending:
 			status = m.spinner.View() + " creating…   "
 		default:
 			status = dimStyle.Render("· queued       ")
@@ -963,10 +1432,10 @@ func (m model) viewCreating() string {
 		rows = append(rows, "  "+status+"  "+truncate(t.Title, 42))
 	}
 
+	w := clamp(m.width-8, 60, 84)
 	body := lipgloss.JoinVertical(lipgloss.Left,
 		title, "", bar, "", strings.Join(rows, "\n"))
 
-	w := clamp(m.width-8, 60, 84)
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center,
 		panelStyle.Width(w).Render(body))
 }
@@ -976,6 +1445,14 @@ func (m model) viewCreating() string {
 func (m model) viewDone() string {
 	created, failed := 0, 0
 	var rows []string
+
+	if m.mode == modeEpic && m.epicKey != "" {
+		rows = append(rows,
+			successStyle.Render("✓")+" "+
+				labelStyle.Render("EPIC")+" "+
+				dimStyle.Render(fmt.Sprintf("%-12s", m.epicKey))+" "+m.epicURL)
+	}
+
 	for i, r := range m.results {
 		if !m.selectedTickets[i] {
 			continue
@@ -1006,6 +1483,81 @@ func (m model) viewDone() string {
 
 	w := clamp(m.width-8, 60, 90)
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center,
+		panelStyle.Width(w).Render(body))
+}
+
+// ── Show-tickets view ─────────────────────────────────────────────────────────
+
+func (m model) viewShowTickets() string {
+	if m.histLoading {
+		return m.viewSpinner("Loading ticket history…")
+	}
+
+	w := clamp(m.width-8, 72, 110)
+	title := titleStyle.Render("Ticket History")
+
+	if len(m.histRecords) == 0 {
+		body := lipgloss.JoinVertical(lipgloss.Left,
+			title, "",
+			dimStyle.Render("No tickets have been created yet."),
+			"",
+			footerStyle.Width(w).Render("q / Esc / Enter to quit"),
+		)
+		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center,
+			panelStyle.Width(w).Render(body))
+	}
+
+	ps := m.histPageSize()
+	end := m.histOffset + ps
+	if end > len(m.histRecords) {
+		end = len(m.histRecords)
+	}
+
+	pageInfo := subtitleStyle.Render(fmt.Sprintf(
+		"%d – %d  of  %d tickets", m.histOffset+1, end, len(m.histRecords)))
+
+	var rows []string
+	for i := m.histOffset; i < end; i++ {
+		r := m.histRecords[i]
+		cur := "  "
+		nameStyle := lipgloss.NewStyle()
+		if i == m.histCursor {
+			cur = cursorStyle.Render("▶ ")
+			nameStyle = selectedItemStyle
+		}
+
+		typeTag := labelStyle.Render(truncate(r.TicketType, 8))
+		keyTag := keyStyle.Render(r.JiraKey)
+		date := dimStyle.Render(r.CreatedAt.Format("2006-01-02"))
+
+		parent := ""
+		if r.ParentKey != "" {
+			parent = dimStyle.Render("↳ "+r.ParentKey) + "  "
+		}
+
+		maxTitle := w - 42
+		row := cur + keyTag + "  " + typeTag + "  " + parent + nameStyle.Render(truncate(r.Title, maxTitle)) + "  " + date
+		rows = append(rows, row)
+	}
+
+	var scrollHint string
+	if m.histOffset > 0 && end < len(m.histRecords) {
+		scrollHint = dimStyle.Render("  ↑ more above  ·  ↓ more below")
+	} else if m.histOffset > 0 {
+		scrollHint = dimStyle.Render("  ↑ more above")
+	} else if end < len(m.histRecords) {
+		scrollHint = dimStyle.Render("  ↓ more below")
+	}
+
+	parts := []string{title, pageInfo, "", strings.Join(rows, "\n")}
+	if scrollHint != "" {
+		parts = append(parts, scrollHint)
+	}
+	parts = append(parts, footerStyle.Width(w).Render(
+		"↑↓/jk navigate  •  PgUp/PgDn jump  •  q / Esc to quit"))
+
+	body := lipgloss.JoinVertical(lipgloss.Left, parts...)
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Top,
 		panelStyle.Width(w).Render(body))
 }
 

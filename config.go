@@ -8,9 +8,7 @@ import (
 	"strings"
 )
 
-const configFilename = ".jira_config"
-
-// Config holds all persisted settings, compatible with the original bash script's ~/.jira_config.
+// Config holds all persisted settings.
 type Config struct {
 	BaseURL          string
 	Email            string
@@ -21,8 +19,13 @@ type Config struct {
 }
 
 func configPath() string {
+	return filepath.Join(appDir(), "config")
+}
+
+// oldConfigPath returns the legacy config location for migration fallback.
+func oldConfigPath() string {
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, configFilename)
+	return filepath.Join(home, ".jira_config")
 }
 
 func loadConfig() Config {
@@ -30,7 +33,16 @@ func loadConfig() Config {
 		AssigneeFallback: "unassigned",
 		IssueType:        "Task",
 	}
-	f, err := os.Open(configPath())
+
+	// Prefer new location; fall back to legacy location.
+	path := configPath()
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		if _, err2 := os.Stat(oldConfigPath()); err2 == nil {
+			path = oldConfigPath()
+		}
+	}
+
+	f, err := os.Open(path)
 	if err != nil {
 		return cfg
 	}
@@ -67,9 +79,12 @@ func loadConfig() Config {
 }
 
 func saveConfig(cfg Config) error {
+	if err := ensureAppDir(); err != nil {
+		return fmt.Errorf("create app dir: %w", err)
+	}
 	path := configPath()
 
-	// Read existing lines so we preserve unknown keys.
+	// Read existing lines to preserve unknown keys.
 	existing := map[string]string{}
 	order := []string{}
 	if f, err := os.Open(path); err == nil {

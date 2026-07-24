@@ -1,86 +1,97 @@
 # jira-tui
 
-A terminal UI for batch-creating Jira tickets from a CSV file. Built with [bubbletea](https://github.com/charmbracelet/bubbletea), [lipgloss](https://github.com/charmbracelet/lipgloss), and [bubbles](https://github.com/charmbracelet/bubbles).
+An interactive terminal UI for creating Jira tickets from a CSV file. Built with [Bubbletea](https://github.com/charmbracelet/bubbletea) and [Lipgloss](https://github.com/charmbracelet/lipgloss).
 
 ## Features
 
-- Authenticates with Jira Cloud via API token
-- Fetches all accessible agile boards (fully paginated)
-- Caches board list locally; refreshes in background on every launch
-- Searchable, paginated board picker
-- Per-session settings: assignee fallback and issue type
-- Selectable ticket list with live preview
-- Batch creates issues with per-ticket progress indicator
-- Reads the same `~/.jira_config` format as the original bash script
+- **Bulk ticket creation** from a CSV file with live progress
+- **Epic mode** — create an epic then link all CSV rows as child tickets
+- **Duplicate detection** — checks local history before creating; prompts to skip or create anyway
+- **Ticket history** — every created ticket is stored in a local SQLite DB; browse with `--show-tickets`
+- **Board search** — filter and select the target Jira project from a searchable board list
+- **Board cache** — board list is cached locally and refreshed in the background
+- **Persistent credentials** — saved to `~/.jira-tui/config` after first successful login
 
-## Requirements
+## Quick start
 
-- Go 1.21+
-- A Jira Cloud account with an [API token](https://id.atlassian.com/manage-profile/security/api-tokens)
+```bash
+go build -o jira-tui .
+./jira-tui                             # create tickets from jira_tickets.csv
+./jira-tui my-tickets.csv              # specify a CSV file
+./jira-tui --create-epic tickets.csv   # create an epic + child tickets
+./jira-tui --show-tickets              # browse previously created tickets
+./jira-tui --help                      # show usage
+```
+
+## CSV format
+
+```csv
+Title,Description,Assignee,Labels
+Fix login bug,Users can't log in with SSO,alice@example.com,bug;auth
+Add dark mode,Implement dark theme support,,feature;ui
+```
+
+- **Title** — required
+- **Description** — optional free text
+- **Assignee** — email or display name (resolved via Jira user search); leave empty for default
+- **Labels** — semicolon-separated; spaces converted to dashes
+
+## Modes
+
+### Normal mode (default)
+
+Walks through: auth → board selection → settings → ticket list → creation → done.
+
+### `--create-epic` / `-ce`
+
+Adds an **Epic Setup** screen (title, description, requester) after the settings screen. CSV rows become child issues linked to the new epic.
+
+If an epic with the same title already exists in local history you'll be asked to confirm before proceeding.
+
+### `--show-tickets` / `-st`
+
+Skips Jira auth entirely and opens a browsable list of all previously created tickets from the local SQLite history. No network access required.
+
+## Keyboard reference
+
+| Key | Action |
+|-----|--------|
+| `↑` `↓` / `j` `k` | Navigate lists |
+| `Tab` / `Shift+Tab` | Move between input fields |
+| `Space` | Toggle ticket selection |
+| `a` | Select / deselect all tickets |
+| `Enter` | Confirm / advance to next screen |
+| `Esc` | Go back |
+| `PgUp` / `PgDn` | Jump a page in long lists |
+| `M` | Enter project key manually (board screen) |
+| `R` | Refresh board list |
+| `q` | Quit (history screen) |
+| `Ctrl+C` | Quit at any time |
+
+## Configuration & data
+
+All files live in `~/.jira-tui/`:
+
+| File | Contents |
+|------|----------|
+| `config` | Jira URL, email, API token, defaults |
+| `history.db` | SQLite — every ticket ever created by this tool |
+| `boards_cache.json` | Cached board list (refreshed on each launch) |
+
+Legacy locations (`~/.jira_config`, `~/.jira_boards_cache.json`) are read as a fallback if the new directory doesn't exist yet.
+
+### Getting a Jira API token
+
+1. Go to <https://id.atlassian.com/manage-profile/security/api-tokens>
+2. Click **Create API token**
+3. Paste it into the API Token field on first launch
 
 ## Build
+
+Requires Go 1.21+.
 
 ```bash
 go build -o jira-tui .
 ```
 
-## Run
-
-```bash
-./jira-tui                     # uses jira_tickets.csv in current directory
-./jira-tui path/to/tickets.csv # custom CSV path
-```
-
-## CSV format
-
-```
-Title,Description,Assignee,Labels
-My ticket,A description,user@company.com,label1;label2
-Another ticket,No assignee,,single-label
-```
-
-- **Title** — issue summary
-- **Description** — plain text body
-- **Assignee** — email or display name; resolved to accountId via Jira API; blank = unassigned
-- **Labels** — semicolon-separated; spaces are replaced with hyphens
-
-## Config file
-
-Credentials are saved automatically to `~/.jira_config` after first successful auth:
-
-```
-BASE_URL="https://company.atlassian.net"
-EMAIL="you@company.com"
-API_TOKEN="your-token"
-ISSUE_TYPE="Task"
-ASSIGNEE_FALLBACK="unassigned"
-```
-
-This file is compatible with the original `create-jira-tickets.sh` bash script.
-
-## Board cache
-
-The full board list is cached in `~/.jira_boards_cache.json`. On subsequent launches the list loads instantly from cache, and a fresh fetch runs in the background (shown with a spinner). Press **R** to force a manual refresh.
-
-## Keyboard shortcuts
-
-### Board picker
-| Key | Action |
-|-----|--------|
-| `↑`/`↓`, `j`/`k` | Navigate |
-| `PgUp`/`PgDn`, `Ctrl+B`/`Ctrl+F` | Jump a page |
-| Type anything | Search boards by name or key |
-| `Esc` | Clear search |
-| `Enter` | Select board |
-| `M` | Enter project key manually |
-| `R` | Force background refresh |
-| `Ctrl+C` | Quit |
-
-### Ticket list
-| Key | Action |
-|-----|--------|
-| `↑`/`↓`, `j`/`k` | Navigate |
-| `Space` | Toggle selection |
-| `a` | Select / deselect all |
-| `Enter` | Create selected tickets |
-| `Ctrl+C` | Quit |
+No CGO required — uses `modernc.org/sqlite` (pure Go).
