@@ -2,7 +2,9 @@ package main
 
 import (
 	"database/sql"
+	"encoding/csv"
 	"fmt"
+	"os"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -586,6 +588,8 @@ func (m model) handleDoneKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if url := m.doneRowURL(m.doneCursor); url != "" {
 			_ = openURL(url)
 		}
+	case "e":
+		_ = m.exportResultsCSV()
 	case "r":
 		// Retry failed tickets. Deselect successful ones and reset failed results.
 		hasFailed := false
@@ -1792,7 +1796,7 @@ func (m model) viewDone() string {
 	if failed > 0 {
 		retryHint = "  •  r retry failed"
 	}
-	footer := footerStyle.Width(w).Render("↑↓/jk scroll  •  o open URL" + retryHint + "  •  q / Esc / Enter to exit")
+	footer := footerStyle.Width(w).Render("↑↓/jk  •  o open URL  •  e export CSV" + retryHint + "  •  q / Esc to exit")
 
 	parts := []string{titleStyle.Render("✓ Done"), "", summary, "", strings.Join(visible, "\n")}
 	if scrollHint != "" {
@@ -1948,6 +1952,33 @@ func maxInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// exportResultsCSV writes the Done-screen results to jira_tickets_results.csv
+// in the current working directory. Columns: Status,Key,Title,URL,Error.
+func (m model) exportResultsCSV() error {
+	f, err := os.Create("jira_tickets_results.csv")
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	w := csv.NewWriter(f)
+	_ = w.Write([]string{"Status", "Key", "Title", "URL", "Error"})
+	if m.mode == modeEpic && m.epicKey != "" {
+		_ = w.Write([]string{"created", m.epicKey, m.epicTitle, m.epicURL, ""})
+	}
+	for i, r := range m.results {
+		if !m.selectedTickets[i] {
+			continue
+		}
+		if r.Key != "" {
+			_ = w.Write([]string{"created", r.Key, r.Ticket.Title, r.URL, ""})
+		} else if r.Err != nil {
+			_ = w.Write([]string{"failed", "", r.Ticket.Title, "", r.Err.Error()})
+		}
+	}
+	w.Flush()
+	return w.Error()
 }
 
 // openURL launches url in the system default browser.
