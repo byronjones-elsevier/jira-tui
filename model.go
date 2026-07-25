@@ -780,7 +780,11 @@ func (m model) checkDupsAndProceed() (model, tea.Cmd) {
 		if !m.selectedTickets[i] {
 			continue
 		}
-		dups, _ := findDuplicates(m.db, m.tickets[i].Title, m.tickets[i].Description)
+		dups, err := findDuplicates(m.db, m.tickets[i].Title, m.tickets[i].Description)
+		if err != nil {
+			m.err = fmt.Errorf("duplicate check failed: %w", err)
+			return m, nil
+		}
 		if len(dups) > 0 {
 			items = append(items, dupCheckItem{
 				ticketIdx:    i,
@@ -870,6 +874,7 @@ func (m model) handleEpicSetupKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case "esc":
+		m.epicInputs[m.epicFocus].Blur()
 		m.screen = screenSettings
 		return m, nil
 

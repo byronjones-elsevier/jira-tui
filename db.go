@@ -129,9 +129,10 @@ func scanTickets(rows *sql.Rows) ([]TicketRecord, error) {
 		); err != nil {
 			return nil, err
 		}
-		r.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
-		_ = json.Unmarshal([]byte(labelsJSON), &r.Labels)
-		if r.Labels == nil {
+		if t, err := time.Parse(time.RFC3339, createdAt); err == nil {
+			r.CreatedAt = t
+		}
+		if err := json.Unmarshal([]byte(labelsJSON), &r.Labels); err != nil || r.Labels == nil {
 			r.Labels = []string{}
 		}
 		records = append(records, r)
