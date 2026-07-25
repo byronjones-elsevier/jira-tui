@@ -2,6 +2,10 @@
 
 An interactive terminal UI for creating Jira tickets.
 
+## Origin
+
+`create-jira-tickets.sh` is the original Bash script that inspired this project. It is kept in the repository for archival purposes. The Go TUI application was built as a full rewrite, adding an interactive interface, epic support, duplicate detection, local history, and more.
+
 ## Built With
  - [Claude Code](https://claude.ai)
  - [Bubbletea](https://github.com/charmbracelet/bubbletea)
