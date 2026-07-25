@@ -6,17 +6,19 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
 
 // Config holds all persisted settings.
 type Config struct {
-	BaseURL          string
-	Email            string
-	APIToken         string
-	DefaultBoardURL  string
-	AssigneeFallback string // "unassigned" | "requester"
-	IssueType        string // "Task" | "Story" | "Bug" | ...
+	BaseURL           string
+	Email             string
+	APIToken          string
+	DefaultBoardURL   string
+	AssigneeFallback  string // "unassigned" | "requester"
+	IssueType         string // "Task" | "Story" | "Bug" | ...
+	BoardCacheTTLHours int   // 0 means use default (24 h)
 }
 
 func configPath() string {
@@ -78,6 +80,10 @@ func loadConfig() Config {
 			cfg.AssigneeFallback = val
 		case "JIRA_ISSUE_TYPE":
 			cfg.IssueType = val
+		case "JIRA_BOARD_CACHE_TTL_HOURS":
+			if n, err := strconv.Atoi(val); err == nil && n >= 0 {
+				cfg.BoardCacheTTLHours = n
+			}
 		}
 	}
 	// Environment variables override config file values.
@@ -89,6 +95,11 @@ func loadConfig() Config {
 	}
 	if v := os.Getenv("JIRA_API_TOKEN"); v != "" {
 		cfg.APIToken = v
+	}
+	if v := os.Getenv("JIRA_BOARD_CACHE_TTL_HOURS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			cfg.BoardCacheTTLHours = n
+		}
 	}
 
 	return cfg
@@ -126,6 +137,9 @@ func saveConfig(cfg Config) error {
 	}
 	if cfg.DefaultBoardURL != "" {
 		updates["JIRA_DEFAULT_BOARD_URL"] = cfg.DefaultBoardURL
+	}
+	if cfg.BoardCacheTTLHours > 0 {
+		updates["JIRA_BOARD_CACHE_TTL_HOURS"] = strconv.Itoa(cfg.BoardCacheTTLHours)
 	}
 
 	dir := filepath.Dir(path)

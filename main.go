@@ -108,10 +108,11 @@ CONFIG & DATA:
   Cache     ~/.jira-tui/boards_cache.json
 
 ENVIRONMENT VARIABLES (override config file):
-  JIRA_BASE_URL     Jira instance URL (e.g. https://myorg.atlassian.net)
-  JIRA_EMAIL        Atlassian account email
-  JIRA_API_TOKEN    Atlassian API token
-  JIRA_TUI_DIR      Override data directory (default: ~/.jira-tui/)
+  JIRA_BASE_URL              Jira instance URL (e.g. https://myorg.atlassian.net)
+  JIRA_EMAIL                 Atlassian account email
+  JIRA_API_TOKEN             Atlassian API token
+  JIRA_TUI_DIR               Override data directory (default: ~/.jira-tui/)
+  JIRA_BOARD_CACHE_TTL_HOURS Board list cache lifetime in hours (default: 24)
 
 KEYBOARD (TUI):
   Tab / Shift+Tab   Move between fields
