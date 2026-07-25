@@ -13,3 +13,12 @@ jira-tui.exe
 .idea/
 .vscode/
 *.swp
+
+# VHS test credentials (never commit)
+.env.test
+
+# VHS test artefacts
+vhs-output/
+vhs-test-tickets.csv
+jira_tickets_results.csv
+*.csv
