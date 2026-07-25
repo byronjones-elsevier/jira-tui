@@ -177,8 +177,10 @@ type model struct {
 	dupCursor int
 
 	// Done (screenDone)
-	doneCursor int
-	doneOffset int
+	doneCursor   int
+	doneOffset   int
+	exportedPath string // set on successful 'e' export
+	exportErr    error  // set on failed 'e' export
 
 	// Show tickets (screenShowTickets)
 	histRecords       []TicketRecord
@@ -1078,7 +1080,13 @@ func (m model) handleDoneKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			_ = openURL(url)
 		}
 	case "e":
-		_ = m.exportResultsCSV()
+		if err := m.exportResultsCSV(); err != nil {
+			m.exportErr = err
+			m.exportedPath = ""
+		} else {
+			m.exportedPath = "jira_tickets_results.csv"
+			m.exportErr = nil
+		}
 	case "r":
 		// Retry is not supported for modeManual (no cmdCreateTicket infrastructure).
 		if m.mode == modeManual {
@@ -2502,6 +2510,11 @@ func (m model) viewDone() string {
 	parts := []string{titleStyle.Render("✓ Done"), "", summary, "", strings.Join(visible, "\n")}
 	if scrollHint != "" {
 		parts = append(parts, scrollHint)
+	}
+	if m.exportedPath != "" {
+		parts = append(parts, "", successStyle.Render("✓ Exported: "+m.exportedPath))
+	} else if m.exportErr != nil {
+		parts = append(parts, "", errorStyle.Render("⚠  Export failed: "+m.exportErr.Error()))
 	}
 	parts = append(parts, "", footer)
 

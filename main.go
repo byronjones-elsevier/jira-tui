@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 // appMode controls which workflow the TUI runs.
@@ -100,6 +101,11 @@ func main() {
 	if epicCSVKey != "" {
 		m.epicCSVKey = epicCSVKey
 	}
+	// Prevent lipgloss from querying terminal background color (OSC 11) after
+	// bubbletea takes over stdin. Without this the response comes back as
+	// keystrokes and lands in whichever input is focused at the time.
+	lipgloss.SetHasDarkBackground(true)
+
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
