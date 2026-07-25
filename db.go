@@ -27,8 +27,22 @@ type TicketRecord struct {
 	Labels      []string
 }
 
+// appDirOverride, when non-empty, replaces the default ~/.jira-tui path.
+// Set this in tests to isolate data files (e.g. appDirOverride = t.TempDir()).
+// In production, set the JIRA_TUI_DIR environment variable instead.
+var appDirOverride string
+
 func appDir() string {
-	home, _ := os.UserHomeDir()
+	if appDirOverride != "" {
+		return appDirOverride
+	}
+	if dir := os.Getenv("JIRA_TUI_DIR"); dir != "" {
+		return dir
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = "."
+	}
 	return filepath.Join(home, ".jira-tui")
 }
 
@@ -47,6 +61,12 @@ func openDB() (*sql.DB, error) {
 	db, err := sql.Open("sqlite", dbPath())
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
+	}
+	// Single connection avoids SQLITE_BUSY races; 5 s timeout for any remaining contention.
+	db.SetMaxOpenConns(1)
+	if _, err := db.Exec(`PRAGMA busy_timeout = 5000`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("set pragma busy_timeout: %w", err)
 	}
 	if err := migrateDB(db); err != nil {
 		db.Close()
@@ -74,8 +94,13 @@ func migrateDB(db *sql.DB) error {
 }
 
 func insertTicket(db *sql.DB, r TicketRecord) error {
+	// Normalise nil to empty so JSON roundtrip is stable:
+	// nil → "null" → nil  vs  []string{} → "[]" → []string{}
+	if r.Labels == nil {
+		r.Labels = []string{}
+	}
 	labels, err := json.Marshal(r.Labels)
-	if err != nil || labels == nil {
+	if err != nil {
 		labels = []byte("[]")
 	}
 	_, err = db.Exec(
@@ -106,6 +131,9 @@ func scanTickets(rows *sql.Rows) ([]TicketRecord, error) {
 		}
 		r.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
 		_ = json.Unmarshal([]byte(labelsJSON), &r.Labels)
+		if r.Labels == nil {
+			r.Labels = []string{}
+		}
 		records = append(records, r)
 	}
 	return records, rows.Err()

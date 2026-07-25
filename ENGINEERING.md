@@ -167,9 +167,46 @@ SQLite local reads/writes are sub-millisecond. Wrapping them in `tea.Cmd` gorout
 
 ## Known issues / future work
 
-- `CreateIssue` uses REST v2 description (plain string). If the Jira instance requires v3 Atlassian Document Format (ADF), the ticket is created with no description. Fix: detect v3 requirement or always send ADF.
-- No retry logic on API errors during batch creation.
-- Board cache has no TTL — refreshed on every launch.
+### Bugs
+
+| Severity | File | Description |
+|----------|------|-------------|
+| **High** | `model.go:startCreation` | If all selected tickets are cleared by the dup-check screen, `startCreation()` sets `screen = screenCreating` then returns `nil` cmd — TUI is stuck with no progress and no exit path other than Ctrl+C. **Fixed in test suite.** |
+| **High** | `jira.go:CreateEpic` | The retry-without-`customfield_10011` fires on *all* errors (network, 403, 404, etc.), not just field-validation failures. This makes two identical API calls and surfaces the second error, masking the real cause. |
+| **High** | `jira.go:CreateIssue` | `json.Marshal` errors on all payload fields are silently discarded (`_`). A title or description containing invalid UTF-8 bytes produces a malformed JSON payload (`"summary":,`) which Jira rejects with an opaque 400 error. |
+| **Medium** | `db.go:insertTicket` | `json.Marshal(nil)` for `[]string` returns `"null"`, not `"[]"`. On read-back `scanTickets` sets `Labels` to `nil`. Normalised to `[]string{}` after fix. **Fixed in code.** |
+| **Medium** | `db.go:scanTickets` | Malformed `created_at` values silently produce zero-time (`0001-01-01`); corrupted `labels` JSON silently produces nil slice. No warnings emitted. |
+| **Medium** | `model.go:checkDupsAndProceed` | DB errors in `findDuplicates` are silently treated as "no duplicates" — duplicate detection is bypassed on DB failure. |
+| **Medium** | `model.go:handleEpicSetupKey` | `Esc` does not blur the currently focused `epicInputs` entry. The component retains its focused state in the background; `Blink` ticks continue; returning to `screenEpicSetup` may show the wrong input as focused. |
+| **Medium** | `config.go:saveConfig` | File is truncated (`O_TRUNC`) before writing. A crash or disk-full between truncate and the final write leaves an empty or partial config file — credentials lost. Fix: write to a temp file then rename. |
+| **Low** | `jira.go:GetBoards` | Boards with empty `location.projectKey` are included in the list. Selecting one sets `m.projectKey = ""`, which Jira rejects with a 400 on the next issue creation. |
+| **Low** | `csv.go:parseCSV` | Excel UTF-8 CSVs include a BOM (`\xef\xbb\xbf`) that is prepended to the first field of every non-header row. Ticket titles get a three-byte prefix, breaking duplicate detection on re-runs. **Fixed in code.** |
+| **Low** | `jira.go:io.ReadAll` | Errors discarded at lines 65 and 85. A truncated response body produces an opaque JSON parse error. |
+| **Low** | `model.go` | `os.UserHomeDir()` errors are discarded at all three call sites (`appDir`, `oldConfigPath`, `oldBoardsCachePath`). In containers without `$HOME` the path becomes `/jira-tui/config`. |
+
+### UX limitations
+
+- **No back-navigation from `screenSettings` or `screenTickets`.** Pressing Esc on either screen does nothing; the only way to reselect a board or change issue type is to restart.
+- **`screenDone` exits on any keypress.** Pressing an arrow key while reading results quits immediately; the done view has no scrolling even when ticket count overflows the panel.
+- **No way to open a URL.** Done view and history view display Jira URLs as plain text with no keybinding to open them in a browser.
+- **No retry for failed tickets.** A transient API error requires a full restart; there is no "retry failed" option.
+- **Assignee resolution failure is silent.** A network error during `ResolveAccountID` is treated as "user not found" — the ticket is created without an assignee with a success checkmark.
+- **Progress bar width hardcoded at 44 chars** (`viewCreating`). Does not adapt to terminal width.
+- **`screenCreating` is uninterruptible.** Once creation begins there is no pause or abort; Ctrl+C kills the process but leaves in-flight API calls (20 s timeout) running in background goroutines.
+- **`m.err` is never cleared on `screenBoards`.** An error from a failed board load persists in the view after the user begins interacting.
+
+### Missing features
+
+- **No delete from history.** `viewShowTickets` is read-only; there is no way to remove a stale or test record from `history.db`.
+- **No environment-variable credentials.** `JIRA_BASE_URL`, `JIRA_API_TOKEN`, etc. are only read from the config file; CI/CD pipelines cannot inject credentials without writing a file. (`JIRA_TUI_DIR` for the data directory is supported.)
+- **No `--project-key` CLI flag.** Board selection is mandatory even when the project key is already known.
+- **No multi-line description input.** The epic description and ticket descriptions are single-line `textinput` widgets capped at 256 characters; long descriptions must be authored in the CSV.
+- **No CSV export of results.** After creation there is no way to write the `JiraKey → Title` mapping to a file.
+- **No schema migration.** `migrateDB` is a single `CREATE TABLE IF NOT EXISTS`. Adding a column to an existing DB requires a manual `ALTER TABLE`; the code silently does nothing if the table already exists.
+- **No cache TTL.** A board list cached months ago is still served as the warm cache on startup (with a background sync); there is no maximum age after which a foreground re-fetch is forced.
+- **`GetBoards` has no page cap.** If `IsLast` is never true the board-fetch loop runs indefinitely. A limit of ~40 pages would prevent a hang.
+- **`CreateIssue` uses REST v2 plain-string description.** Instances that require Atlassian Document Format (ADF) will create tickets with no description.
+- **No per-ticket assignee fallback visibility.** When an assignee cannot be resolved, the user is not told; the ticket is created as unassigned silently.
 
 ## Build
 

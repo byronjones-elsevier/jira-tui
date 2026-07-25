@@ -35,8 +35,9 @@ func loadConfig() Config {
 	}
 
 	// Prefer new location; fall back to legacy location.
+	// Skip legacy fallback when appDirOverride is set (test isolation).
 	path := configPath()
-	if _, err := os.Stat(path); os.IsNotExist(err) {
+	if _, err := os.Stat(path); os.IsNotExist(err) && appDirOverride == "" {
 		if _, err2 := os.Stat(oldConfigPath()); err2 == nil {
 			path = oldConfigPath()
 		}

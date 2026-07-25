@@ -797,15 +797,19 @@ func (m model) checkDupsAndProceed() (model, tea.Cmd) {
 
 // startCreation begins the screenCreating flow.
 func (m model) startCreation() (model, tea.Cmd) {
-	m.screen = screenCreating
 	if m.mode == modeEpic {
+		m.screen = screenCreating
 		m.epicPending = true
 		return m, m.cmdCreateEpic()
 	}
 	first := m.firstSelected()
 	if first < 0 {
+		// Nothing selected — skip creation and go straight to the done screen.
+		m.progress = 1.0
+		m.screen = screenDone
 		return m, nil
 	}
+	m.screen = screenCreating
 	m.creating = first
 	return m, m.cmdCreateTicket(first)
 }
