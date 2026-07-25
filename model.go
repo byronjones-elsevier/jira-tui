@@ -2019,7 +2019,12 @@ func (m model) handleShowTicketsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Clear transient one-line messages on any keypress.
 	m.histJiraDeleteErr = nil
 	m.histTransitionErr = nil
-	m.histStatusRefreshMsg = ""
+
+	// If a refresh result is showing, consume this keypress to dismiss it.
+	if m.histStatusRefreshMsg != "" {
+		m.histStatusRefreshMsg = ""
+		return m, nil
+	}
 
 	filtered := m.histFiltered()
 
