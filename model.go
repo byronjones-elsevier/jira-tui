@@ -35,6 +35,7 @@ const (
 	screenShowTickets                  // browse local history
 	screenManualEntry                  // interactive single-ticket form (modeManual)
 	screenManualContinue               // "add subtask or finish?" prompt after epic creation
+	screenExportCSV                    // file-path input for Done-screen CSV export
 	screenFirstRun                     // first-launch welcome / data-dir creation prompt
 	screenEpicCSVQuery                 // loading spinner while querying epic + children
 	screenEpicCSVReview                // scrollable preview of epic children, confirm before save
@@ -177,10 +178,16 @@ type model struct {
 	dupCursor int
 
 	// Done (screenDone)
-	doneCursor   int
-	doneOffset   int
-	exportedPath string // set on successful 'e' export
-	exportErr    error  // set on failed 'e' export
+	doneCursor int
+	doneOffset int
+
+	// Export CSV (screenExportCSV)
+	exportCSVResultInp     textinput.Model // path textinput on screenExportCSV
+	exportCSVResultSaved   bool            // true after successful write
+	exportCSVResultPath    string          // path of last successful write
+	exportCSVResultErr     error           // last write error
+	exportCSVResultConfirm bool            // true while waiting for overwrite y/n
+	exportCSVResultPending string          // staged path awaiting overwrite confirm
 
 	// Show tickets (screenShowTickets)
 	histRecords       []TicketRecord
@@ -269,6 +276,9 @@ func newModel(cfg Config, tickets []Ticket, db *sql.DB, mode appMode, firstRun b
 	epicCSVInp.Placeholder = "e.g. PROJ-123.csv"
 	epicCSVInp.CharLimit = 256
 
+	exportResultInp := textinput.New()
+	exportResultInp.CharLimit = 256
+
 	s := spinner.New()
 	s.Spinner = spinner.Dot
 	s.Style = lipgloss.NewStyle().Foreground(purple)
@@ -299,8 +309,9 @@ func newModel(cfg Config, tickets []Ticket, db *sql.DB, mode appMode, firstRun b
 		epicDescTA:       epicDesc,
 		manualInputs:     manualInps,
 		manualDesc:       manualDesc,
-		epicCSVPathInp:   epicCSVInp,
-		spinner:          s,
+		epicCSVPathInp:     epicCSVInp,
+		exportCSVResultInp: exportResultInp,
+		spinner:            s,
 		selectedTickets:  selected,
 		assigneeFallback: af,
 		issueType:        it,
@@ -736,6 +747,8 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleShowTicketsKey(msg)
 	case screenDone:
 		return m.handleDoneKey(msg)
+	case screenExportCSV:
+		return m.handleExportCSVKey(msg)
 	case screenEpicCSVQuery:
 		return m.handleEpicCSVQueryKey(msg)
 	case screenEpicCSVReview:
@@ -1080,13 +1093,13 @@ func (m model) handleDoneKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			_ = openURL(url)
 		}
 	case "e":
-		if err := m.exportResultsCSV(); err != nil {
-			m.exportErr = err
-			m.exportedPath = ""
-		} else {
-			m.exportedPath = "jira_tickets_results.csv"
-			m.exportErr = nil
-		}
+		m.exportCSVResultInp.SetValue(m.defaultExportPath())
+		m.exportCSVResultSaved = false
+		m.exportCSVResultErr = nil
+		m.exportCSVResultConfirm = false
+		m.exportCSVResultPending = ""
+		m.screen = screenExportCSV
+		return m, m.exportCSVResultInp.Focus()
 	case "r":
 		// Retry is not supported for modeManual (no cmdCreateTicket infrastructure).
 		if m.mode == modeManual {
@@ -1114,6 +1127,69 @@ func (m model) handleDoneKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.doneCursor = 0
 		m.doneOffset = 0
 		return m.startCreation()
+	}
+	return m, nil
+}
+
+// ── Export CSV keys ───────────────────────────────────────────────────────────
+
+func (m model) handleExportCSVKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// After a successful save, only quit keys are active.
+	if m.exportCSVResultSaved {
+		switch msg.String() {
+		case "q", "esc", "enter":
+			return m, tea.Quit
+		}
+		return m, nil
+	}
+
+	// Overwrite confirmation sub-state.
+	if m.exportCSVResultConfirm {
+		switch strings.ToLower(msg.String()) {
+		case "y":
+			if err := m.exportResultsCSV(m.exportCSVResultPending); err != nil {
+				m.exportCSVResultErr = err
+			} else {
+				m.exportCSVResultSaved = true
+				m.exportCSVResultPath = m.exportCSVResultPending
+				m.exportCSVResultErr = nil
+			}
+			m.exportCSVResultConfirm = false
+			m.exportCSVResultPending = ""
+		default:
+			m.exportCSVResultConfirm = false
+			m.exportCSVResultPending = ""
+		}
+		return m, nil
+	}
+
+	switch msg.String() {
+	case "enter":
+		path := strings.TrimSpace(m.exportCSVResultInp.Value())
+		if path == "" {
+			path = m.defaultExportPath()
+		}
+		if _, err := os.Stat(path); err == nil {
+			// File exists — ask for overwrite confirmation.
+			m.exportCSVResultConfirm = true
+			m.exportCSVResultPending = path
+			return m, nil
+		}
+		if err := m.exportResultsCSV(path); err != nil {
+			m.exportCSVResultErr = err
+		} else {
+			m.exportCSVResultSaved = true
+			m.exportCSVResultPath = path
+			m.exportCSVResultErr = nil
+		}
+	case "esc":
+		m.exportCSVResultErr = nil
+		m.exportCSVResultConfirm = false
+		m.screen = screenDone
+	default:
+		var cmd tea.Cmd
+		m.exportCSVResultInp, cmd = m.exportCSVResultInp.Update(msg)
+		return m, cmd
 	}
 	return m, nil
 }
@@ -1827,6 +1903,8 @@ func (m model) View() string {
 		return m.viewCreating()
 	case screenDone:
 		return m.viewDone()
+	case screenExportCSV:
+		return m.viewExportCSV()
 	case screenEpicSetup:
 		return m.viewEpicSetup()
 	case screenEpicDupWarn:
@@ -2511,14 +2589,62 @@ func (m model) viewDone() string {
 	if scrollHint != "" {
 		parts = append(parts, scrollHint)
 	}
-	if m.exportedPath != "" {
-		parts = append(parts, "", successStyle.Render("✓ Exported: "+m.exportedPath))
-	} else if m.exportErr != nil {
-		parts = append(parts, "", errorStyle.Render("⚠  Export failed: "+m.exportErr.Error()))
-	}
 	parts = append(parts, "", footer)
 
 	body := lipgloss.JoinVertical(lipgloss.Left, parts...)
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center,
+		panelStyle.Width(w).Render(body))
+}
+
+// ── Export CSV view ───────────────────────────────────────────────────────────
+
+func (m model) viewExportCSV() string {
+	w := clamp(m.width-8, 60, 84)
+
+	if m.exportCSVResultSaved {
+		rowCount := 0
+		for i, r := range m.results {
+			if m.selectedTickets[i] && (r.Key != "" || r.Err != nil) {
+				rowCount++
+			}
+		}
+		if m.mode == modeEpic && m.epicKey != "" {
+			rowCount++
+		}
+		body := lipgloss.JoinVertical(lipgloss.Left,
+			titleStyle.Render("CSV Saved"),
+			"",
+			successStyle.Render("✓ "+m.exportCSVResultPath),
+			"",
+			subtitleStyle.Render(fmt.Sprintf("%d result(s) exported", rowCount)),
+			dimStyle.Render("Columns: Status, Key, Title, URL, Error"),
+			"",
+			footerStyle.Width(w).Render("Enter / q / Esc to exit"),
+		)
+		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center,
+			panelStyle.Width(w).Render(body))
+	}
+
+	var statusLine string
+	if m.exportCSVResultConfirm {
+		statusLine = errorStyle.Render("⚠  File exists — overwrite? y / any other key to cancel")
+	} else if m.exportCSVResultErr != nil {
+		statusLine = errorStyle.Render("⚠  " + m.exportCSVResultErr.Error())
+	}
+
+	defaultPath := m.defaultExportPath()
+	body := lipgloss.JoinVertical(lipgloss.Left,
+		titleStyle.Render("Export Results CSV"),
+		subtitleStyle.Render("Columns: Status, Key, Title, URL, Error"),
+		"",
+		subtitleStyle.Render("File path"),
+		focusedInputStyle.Width(w-8).Render(m.exportCSVResultInp.View()),
+		dimStyle.Render("Default: "+defaultPath),
+		"",
+		statusLine,
+		"",
+		footerStyle.Width(w).Render("Enter to save  •  Esc back to results  •  Ctrl+C quit"),
+	)
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center,
 		panelStyle.Width(w).Render(body))
 }
@@ -2668,10 +2794,18 @@ func maxInt(a, b int) int {
 	return b
 }
 
-// exportResultsCSV writes the Done-screen results to jira_tickets_results.csv
-// in the current working directory. Columns: Status,Key,Title,URL,Error.
-func (m model) exportResultsCSV() error {
-	f, err := os.Create("jira_tickets_results.csv")
+// defaultExportPath returns the default CSV export filename for the Done screen.
+func (m model) defaultExportPath() string {
+	if m.epicKey != "" {
+		return m.epicKey + ".csv"
+	}
+	return "jira_tickets_results.csv"
+}
+
+// exportResultsCSV writes the Done-screen results to path.
+// Columns: Status,Key,Title,URL,Error.
+func (m model) exportResultsCSV(path string) error {
+	f, err := os.Create(path)
 	if err != nil {
 		return err
 	}
