@@ -75,7 +75,13 @@ If you choose **Epic**, a "Add a subtask?" prompt appears after creation. Select
 
 ### `--show-tickets` / `-st`
 
-Opens a browsable list of all previously created tickets from the local SQLite history. Press `/` to activate the filter bar and type to narrow the list by title, ticket key, type, or parent key. Press `d` to delete a local record only. Press `D` (shift+d) to delete the ticket from Jira **and** remove it from the local history (requires "Delete Issues" project permission in Jira).
+Opens a browsable list of all previously created tickets from the local SQLite history.
+
+- **Filter** — press `/` to focus the filter bar; type to narrow by title, key, type, or parent key. Esc clears the filter; Enter blurs while keeping it active.
+- **Sort** — press `s` to cycle the sort field (Date → Key → Title → Type); press `S` to reverse direction. The current sort is shown in the subtitle.
+- **Status** — press `t` on any ticket to fetch available Jira workflow transitions and apply one. Press `R` to bulk-refresh status for every ticket at once (batches of 50 via JQL).
+- **Delete** — press `d` to remove a local history record only; press `D` to delete the ticket from Jira and remove the local record (requires "Delete Issues" project permission).
+- **Open** — press `o` to open the selected ticket URL in your default browser.
 
 ### `--create-csv-from-epic` / `-ccfe <KEY>`
 

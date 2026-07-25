@@ -12,8 +12,10 @@ A Go terminal UI app that creates Jira tickets interactively. Started as a rewri
 main.go       – entry point; flag parsing (-ce -ct -st -ccfe -pk -h), first-run check, DB open, bubbletea launch
 model.go      – ALL TUI logic: screen state machine, Update, View, key handlers, tea.Cmd closures
 jira.go       – Jira REST API client (auth, boards, user lookup, CreateIssue, CreateEpic,
-                GetIssue, GetEpicChildren, searchIssues, IssueDescription, toADFJSON)
-db.go         – SQLite history DB (openDB, insertTicket, findDuplicates, allTickets, deleteTicket)
+                GetIssue, GetEpicChildren, searchIssues, DeleteIssue,
+                GetTransitions, TransitionIssue, IssueDescription, toADFJSON)
+db.go         – SQLite history DB (openDB, insertTicket, findDuplicates, allTickets,
+                deleteTicket, updateTicketStatus); schema versioned via schema_version table (v2)
 config.go     – ~/.jira-tui/config read/write (KEY="value" bash-compatible format)
 cache.go      – ~/.jira-tui/boards_cache.json load/save + formatAge helper; 24-hour TTL
 csv.go        – Ticket struct + parseCSV (BOM-stripping, empty-title filtering)
@@ -49,7 +51,7 @@ make test
 | _(none)_ | `modeNormal` | Auth → board → settings → ticket list → create → done |
 | `-ce` / `--create-epic` | `modeEpic` | Same + Epic Setup screen; tickets become children of the new epic |
 | `-ct` / `--create-ticket` | `modeManual` | Auth → board → manual form → create; if Epic type, loops to add subtasks |
-| `-st` / `--show-tickets` | `modeShow` | Local SQLite history only; no network |
+| `-st` / `--show-tickets` | `modeShow` | Local SQLite history browser; skips auth on startup but `D`/`t`/`R` make Jira API calls at runtime (client built from saved config on demand) |
 | `-ccfe <KEY>` / `--create-csv-from-epic <KEY>` | `modeEpicToCSV` | Auth → query ticket (any type with children) → review children → save CSV |
 | `-pk <KEY>` / `--project-key <KEY>` | _(flag, any mode)_ | Skip board picker; sets `m.projectKey` directly |
 

@@ -8,8 +8,8 @@ Architecture and implementation notes for `jira-tui`.
 |------|---------|
 | `main.go` | Entry point; parses flags (`-ce`, `-ct`, `-st`, `-ccfe`, `-pk`, `-h`), first-run check, opens DB, launches bubbletea |
 | `model.go` | Entire TUI — screen state machine, `Update`, `View`, key handlers |
-| `jira.go` | Jira REST API client (auth, boards, user lookup, `CreateIssue`, `CreateEpic`, `GetIssue`, `GetEpicChildren`, `searchIssues`, `IssueDescription`, `toADFJSON`) |
-| `db.go` | SQLite history DB — `openDB`, `insertTicket`, `findDuplicates`, `allTickets`, `isFirstRun` |
+| `jira.go` | Jira REST API client — auth, boards, user lookup, `CreateIssue`, `CreateEpic`, `GetIssue`, `GetEpicChildren`, `searchIssues`, `DeleteIssue`, `GetTransitions`, `TransitionIssue`, `IssueDescription`, `toADFJSON` |
+| `db.go` | SQLite history DB — `openDB`, `insertTicket`, `findDuplicates`, `allTickets`, `deleteTicket`, `updateTicketStatus`, `isFirstRun`; schema versioned via `schema_version` table |
 | `config.go` | Config struct, `loadConfig`, `saveConfig` — `~/.jira-tui/config` |
 | `cache.go` | Board list cache — `~/.jira-tui/boards_cache.json` (load/save/formatAge) |
 | `csv.go` | `Ticket` struct and `parseCSV()` |
@@ -26,7 +26,7 @@ The program has five modes, selected at launch via flags:
 |------|------|-----------|
 | _(none)_ | `modeNormal` | Auth → board → settings → ticket list → create → done |
 | `--create-epic` / `-ce` | `modeEpic` | Same flow but inserts Epic Setup screen; tickets become children of the created epic |
-| `--show-tickets` / `-st` | `modeShow` | Skips Jira auth entirely; loads local history from SQLite and displays it |
+| `--show-tickets` / `-st` | `modeShow` | Skips Jira auth on startup; loads local history from SQLite. `D`, `t`, and `R` make Jira API calls at runtime (build client from saved config on demand) |
 | `--create-ticket` / `-ct` | `modeManual` | Auth → board → manual form (title/desc/assignee/labels/type) → create; if Epic, loops to offer subtask creation |
 | `--create-csv-from-epic <KEY>` / `-ccfe <KEY>` | `modeEpicToCSV` | Auth → query ticket by key → review children → choose save path → write CSV |
 | _(Done screen `e` key, any mode)_ | — | `screenDone` → `screenExportCSV` (path input, overwrite confirm, save feedback) → quit |
@@ -83,6 +83,9 @@ screenDone (any mode, 'e' key):
 | `manualTicketCreatedMsg` | After `cmdCreateManualTicket()` | Save to DB; if Epic → screenManualContinue; else → screenDone |
 | `historyLoadedMsg` | After `allTickets()` | Populate history list |
 | `jiraDeleteMsg` | After `DeleteIssue()` | On success: remove from local DB and list, adjust cursor/offset; on error: set `histJiraDeleteErr` (shown in footer) |
+| `transitionsLoadedMsg` | After `GetIssue` + `GetTransitions` | On success: populate `histTransitions`, set `histTransitionActive=true`; on error: set `histTransitionErr` |
+| `transitionAppliedMsg` | After `TransitionIssue` + `updateTicketStatus` | On success: update `histRecords[i].Status` in-memory; on error: set `histTransitionErr` |
+| `bulkStatusMsg` | After `cmdRefreshAllStatuses` | Update all matched `histRecords[i].Status` in-memory; set `histStatusRefreshMsg` with count summary |
 | `epicQueryMsg` | After `GetIssue` + `GetEpicChildren` | On error: stay on screenEpicCSVQuery with error displayed; on success: → screenEpicCSVReview |
 | `spinner.TickMsg` | Bubbletea ticker | Advance spinner animation |
 
@@ -254,6 +257,8 @@ SQLite local reads/writes are sub-millisecond. Wrapping them in `tea.Cmd` gorout
 
 - **No delete from history.** `viewShowTickets` is read-only; there is no way to remove a stale or test record from `history.db`. **Fixed in code** (`d` key prompts for confirmation; `y` deletes the local record only; `D` (shift+d) prompts separately, then calls `DeleteIssue` via the Jira API and removes the local record on success; any other key cancels; Jira delete errors are shown in the footer until the next keypress).
 - **No search in history view.** `viewShowTickets` showed all records with no way to filter. **Fixed in code** (`/` focuses a filter bar; typing narrows by title, key, type, or parent key; Esc clears the filter; Enter blurs and keeps results; navigation keys work while typing).
+- **No sorting in history view.** Records always shown in DB insertion order. **Fixed in code** (`s` cycles sort field: Date/Key/Title/Type; `S` toggles direction; sort indicator shown in subtitle; sort runs inside `histFiltered()` via `sort.SliceStable` before the search filter is applied).
+- **No status tracking.** Ticket status was not stored and could not be updated from the history view. **Fixed in code** (`status TEXT` column added in DB migration 2; `t` key opens a workflow transition picker for the selected ticket; `R` bulk-refreshes status for all tickets using batched JQL; status shown as `[tag]` on each row; both `t` and `R` build a Jira client from saved config when `m.client` is nil).
 - **No environment-variable credentials.** `JIRA_BASE_URL`, `JIRA_API_TOKEN`, etc. are only read from the config file; CI/CD pipelines cannot inject credentials without writing a file. (`JIRA_TUI_DIR` for the data directory is supported.) **Fixed in code** (`JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN` env vars now override config file values in `loadConfig`).
 - **No `--project-key` CLI flag.** Board selection is mandatory even when the project key is already known. **Fixed in code** (`-pk`/`--project-key <KEY>` skips board picker; auth still runs to obtain user credentials).
 - **No multi-line description input.** The epic description and ticket descriptions are single-line `textinput` widgets capped at 256 characters; long descriptions must be authored in the CSV. **Fixed in code** (epic description replaced with a `textarea.Model`; Enter inserts newlines, Tab advances to the next field).
