@@ -178,7 +178,7 @@ SQLite local reads/writes are sub-millisecond. Wrapping them in `tea.Cmd` gorout
 | **Medium** | `db.go:scanTickets` | Malformed `created_at` values silently produce zero-time (`0001-01-01`); corrupted `labels` JSON silently produces nil slice. No warnings emitted. |
 | **Medium** | `model.go:checkDupsAndProceed` | DB errors in `findDuplicates` are silently treated as "no duplicates" — duplicate detection is bypassed on DB failure. |
 | **Medium** | `model.go:handleEpicSetupKey` | `Esc` does not blur the currently focused `epicInputs` entry. The component retains its focused state in the background; `Blink` ticks continue; returning to `screenEpicSetup` may show the wrong input as focused. |
-| **Medium** | `config.go:saveConfig` | File is truncated (`O_TRUNC`) before writing. A crash or disk-full between truncate and the final write leaves an empty or partial config file — credentials lost. Fix: write to a temp file then rename. |
+| **Medium** | `config.go:saveConfig` | File is truncated (`O_TRUNC`) before writing. A crash or disk-full between truncate and the final write leaves an empty or partial config file — credentials lost. Fix: write to a temp file then rename. **Fixed in code.** |
 | **Low** | `jira.go:GetBoards` | Boards with empty `location.projectKey` are included in the list. Selecting one sets `m.projectKey = ""`, which Jira rejects with a 400 on the next issue creation. |
 | **Low** | `csv.go:parseCSV` | Excel UTF-8 CSVs include a BOM (`\xef\xbb\xbf`) that is prepended to the first field of every non-header row. Ticket titles get a three-byte prefix, breaking duplicate detection on re-runs. **Fixed in code.** |
 | **Low** | `jira.go:io.ReadAll` | Errors discarded at lines 65 and 85. A truncated response body produces an opaque JSON parse error. |
@@ -186,7 +186,7 @@ SQLite local reads/writes are sub-millisecond. Wrapping them in `tea.Cmd` gorout
 
 ### UX limitations
 
-- **No back-navigation from `screenSettings` or `screenTickets`.** Pressing Esc on either screen does nothing; the only way to reselect a board or change issue type is to restart.
+- **No back-navigation from `screenSettings` or `screenTickets`.** Pressing Esc on either screen does nothing; the only way to reselect a board or change issue type is to restart. **Fixed in code** (Esc → screenBoards from Settings; Esc → screenSettings from Tickets).
 - **`screenDone` exits on any keypress.** Pressing an arrow key while reading results quits immediately; the done view has no scrolling even when ticket count overflows the panel.
 - **No way to open a URL.** Done view and history view display Jira URLs as plain text with no keybinding to open them in a browser.
 - **No retry for failed tickets.** A transient API error requires a full restart; there is no "retry failed" option.
@@ -198,7 +198,7 @@ SQLite local reads/writes are sub-millisecond. Wrapping them in `tea.Cmd` gorout
 ### Missing features
 
 - **No delete from history.** `viewShowTickets` is read-only; there is no way to remove a stale or test record from `history.db`.
-- **No environment-variable credentials.** `JIRA_BASE_URL`, `JIRA_API_TOKEN`, etc. are only read from the config file; CI/CD pipelines cannot inject credentials without writing a file. (`JIRA_TUI_DIR` for the data directory is supported.)
+- **No environment-variable credentials.** `JIRA_BASE_URL`, `JIRA_API_TOKEN`, etc. are only read from the config file; CI/CD pipelines cannot inject credentials without writing a file. (`JIRA_TUI_DIR` for the data directory is supported.) **Fixed in code** (`JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN` env vars now override config file values in `loadConfig`).
 - **No `--project-key` CLI flag.** Board selection is mandatory even when the project key is already known.
 - **No multi-line description input.** The epic description and ticket descriptions are single-line `textinput` widgets capped at 256 characters; long descriptions must be authored in the CSV.
 - **No CSV export of results.** After creation there is no way to write the `JiraKey → Title` mapping to a file.

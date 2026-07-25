@@ -726,6 +726,8 @@ func (m model) handleSettingsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case 1:
 			m.issueType = nextIn(issueTypes, m.issueType)
 		}
+	case "esc":
+		m.screen = screenBoards
 	case "enter":
 		if m.mode == modeEpic {
 			m.screen = screenEpicSetup
@@ -755,6 +757,8 @@ func (m model) handleTicketsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		for i := range m.tickets {
 			m.selectedTickets[i] = !all
 		}
+	case "esc":
+		m.screen = screenSettings
 	case "enter":
 		// In epic mode we can proceed with zero selected tickets (epic-only).
 		if m.mode != modeEpic && m.countSelected() == 0 {

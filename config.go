@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -76,6 +77,17 @@ func loadConfig() Config {
 			cfg.IssueType = val
 		}
 	}
+	// Environment variables override config file values.
+	if v := os.Getenv("JIRA_BASE_URL"); v != "" {
+		cfg.BaseURL = v
+	}
+	if v := os.Getenv("JIRA_EMAIL"); v != "" {
+		cfg.Email = v
+	}
+	if v := os.Getenv("JIRA_API_TOKEN"); v != "" {
+		cfg.APIToken = v
+	}
+
 	return cfg
 }
 
@@ -113,25 +125,44 @@ func saveConfig(cfg Config) error {
 		updates["JIRA_DEFAULT_BOARD_URL"] = cfg.DefaultBoardURL
 	}
 
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".config-tmp-*")
 	if err != nil {
-		return fmt.Errorf("could not write config: %w", err)
+		return fmt.Errorf("could not create temp config: %w", err)
 	}
-	defer f.Close()
+	tmpName := tmp.Name()
 
 	written := map[string]bool{}
 	for _, k := range order {
 		if v, ok := updates[k]; ok {
-			fmt.Fprintf(f, "%s=\"%s\"\n", k, v)
+			fmt.Fprintf(tmp, "%s=\"%s\"\n", k, v)
 			written[k] = true
 		} else {
-			fmt.Fprintln(f, existing[k])
+			fmt.Fprintln(tmp, existing[k])
 		}
 	}
-	for k, v := range updates {
+	keys := make([]string, 0, len(updates))
+	for k := range updates {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
 		if !written[k] {
-			fmt.Fprintf(f, "%s=\"%s\"\n", k, v)
+			fmt.Fprintf(tmp, "%s=\"%s\"\n", k, updates[k])
 		}
+	}
+
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return fmt.Errorf("could not flush temp config: %w", err)
+	}
+	if err := os.Chmod(tmpName, 0600); err != nil {
+		os.Remove(tmpName)
+		return fmt.Errorf("could not chmod temp config: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		os.Remove(tmpName)
+		return fmt.Errorf("could not write config: %w", err)
 	}
 	return nil
 }
