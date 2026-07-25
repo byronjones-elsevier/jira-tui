@@ -325,7 +325,6 @@ func TestGetIssue_HTTPError(t *testing.T) {
 
 func TestGetEpicChildren_ReturnsChildren(t *testing.T) {
 	resp := `{
-		"total": 2,
 		"issues": [
 			{"key":"PROJ-2","fields":{"summary":"Child 1","issuetype":{"name":"Task"},"labels":["a"]}},
 			{"key":"PROJ-3","fields":{"summary":"Child 2","issuetype":{"name":"Story"},"labels":[]}}
@@ -342,16 +341,17 @@ func TestGetEpicChildren_ReturnsChildren(t *testing.T) {
 }
 
 func TestGetEpicChildren_FallbackToEpicLink(t *testing.T) {
-	// parent= returns 0, Epic Link returns 1 result
+	// parent= returns 0 results; Epic Link returns 1 result.
+	// After the switch to POST /search/jql, the JQL is in the request body.
 	callCount := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		callCount++
 		w.Header().Set("Content-Type", "application/json")
-		q := r.URL.Query().Get("jql")
-		if strings.Contains(q, "parent") {
-			fmt.Fprint(w, `{"total":0,"issues":[]}`)
+		body, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(body), "parent") {
+			fmt.Fprint(w, `{"issues":[]}`)
 		} else {
-			fmt.Fprint(w, `{"total":1,"issues":[{"key":"PROJ-5","fields":{"summary":"Classic Child","issuetype":{"name":"Task"},"labels":[]}}]}`)
+			fmt.Fprint(w, `{"issues":[{"key":"PROJ-5","fields":{"summary":"Classic Child","issuetype":{"name":"Task"},"labels":[]}}]}`)
 		}
 	}))
 	t.Cleanup(srv.Close)

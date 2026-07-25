@@ -419,22 +419,37 @@ func (c *JiraClient) GetEpicChildren(epicKey string) ([]JiraIssue, error) {
 	return issues, nil
 }
 
-// searchIssues runs a paginated JQL search and returns all matching issues.
+// searchIssues runs a paginated JQL search via the v3 /search/jql POST endpoint
+// and returns all matching issues.
 func (c *JiraClient) searchIssues(jql, fields string) ([]JiraIssue, error) {
 	type searchResult struct {
-		Total  int         `json:"total"`
-		Issues []JiraIssue `json:"issues"`
+		Issues        []JiraIssue `json:"issues"`
+		NextPageToken string      `json:"nextPageToken"`
+	}
+	type searchReq struct {
+		JQL           string   `json:"jql"`
+		Fields        []string `json:"fields"`
+		MaxResults    int      `json:"maxResults"`
+		NextPageToken string   `json:"nextPageToken,omitempty"`
 	}
 
 	const pageSize = 50
 	const maxPages = 20
 	var all []JiraIssue
-	startAt := 0
+	nextToken := ""
 
 	for page := 0; page < maxPages; page++ {
-		path := fmt.Sprintf("/rest/api/2/search?jql=%s&fields=%s&maxResults=%d&startAt=%d",
-			url.QueryEscape(jql), url.QueryEscape(fields), pageSize, startAt)
-		data, err := c.get(path)
+		req := searchReq{
+			JQL:           jql,
+			Fields:        strings.Split(fields, ","),
+			MaxResults:    pageSize,
+			NextPageToken: nextToken,
+		}
+		body, err := json.Marshal(req)
+		if err != nil {
+			return nil, err
+		}
+		data, err := c.postJSON("/rest/api/3/search/jql", string(body))
 		if err != nil {
 			return nil, err
 		}
@@ -443,10 +458,10 @@ func (c *JiraClient) searchIssues(jql, fields string) ([]JiraIssue, error) {
 			return nil, err
 		}
 		all = append(all, result.Issues...)
-		if len(all) >= result.Total || len(result.Issues) == 0 {
+		if result.NextPageToken == "" || len(result.Issues) == 0 {
 			break
 		}
-		startAt += len(result.Issues)
+		nextToken = result.NextPageToken
 	}
 
 	return all, nil
