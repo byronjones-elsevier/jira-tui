@@ -6,18 +6,21 @@ Architecture and implementation notes for `jira-tui`.
 
 | File | Purpose |
 |------|---------|
-| `main.go` | Entry point; parses flags (`-ce`, `-st`, `-h`), opens DB, launches bubbletea |
+| `main.go` | Entry point; parses flags (`-ce`, `-ct`, `-st`, `-pk`, `-h`), first-run check, opens DB, launches bubbletea |
 | `model.go` | Entire TUI — screen state machine, `Update`, `View`, key handlers |
-| `jira.go` | Jira REST API client (auth, boards, user lookup, `CreateIssue`, `CreateEpic`) |
-| `db.go` | SQLite history DB — `openDB`, `insertTicket`, `findDuplicates`, `allTickets` |
+| `jira.go` | Jira REST API client (auth, boards, user lookup, `CreateIssue`, `CreateEpic`, `toADFJSON`) |
+| `db.go` | SQLite history DB — `openDB`, `insertTicket`, `findDuplicates`, `allTickets`, `isFirstRun` |
 | `config.go` | Config struct, `loadConfig`, `saveConfig` — `~/.jira-tui/config` |
 | `cache.go` | Board list cache — `~/.jira-tui/boards_cache.json` (load/save/formatAge) |
 | `csv.go` | `Ticket` struct and `parseCSV()` |
 | `styles.go` | lipgloss colour vars, style vars, `progressBar()`, `truncate()` |
+| `Makefile` | Build, test, lint, install, run targets |
+| `.github/workflows/ci.yml` | CI: build + test + lint on push/PR |
+| `.github/workflows/release.yml` | Release: cross-compile 6 targets + GitHub release on `v*` tag |
 
 ## Modes
 
-The program has three modes, selected at launch via flags:
+The program has four modes, selected at launch via flags:
 
 | Flag | Mode | Behaviour |
 |------|------|-----------|
@@ -49,6 +52,7 @@ modeManual:
 ```
 
 - `[screenDupCheck]` and `[screenEpicDupWarn]` are only shown when duplicates are found in the local DB.
+- `screenFirstRun` is shown on the very first launch (before any other screen) when `~/.jira-tui/` does not exist and no override env var is set.
 - Each screen has its own `view*()` and `handle*Key()` method on `model`.
 - Async operations are `tea.Cmd` closures; results come back as typed messages.
 
@@ -61,6 +65,7 @@ modeManual:
 | `boardsSyncedMsg` | After `GetBoards()` (background) | Update list; save cache; clear syncing flag |
 | `epicCreatedMsg` | After `CreateEpic()` | Save epic to DB; start first child ticket |
 | `ticketCreatedMsg` | After `CreateIssue()` | Save to DB; chain next ticket or go to Done |
+| `manualTicketCreatedMsg` | After `cmdCreateManualTicket()` | Save to DB; if Epic → screenManualContinue; else → screenDone |
 | `historyLoadedMsg` | After `allTickets()` | Populate history list |
 | `spinner.TickMsg` | Bubbletea ticker | Advance spinner animation |
 
@@ -153,8 +158,8 @@ Legacy locations (`~/.jira_config`, `~/.jira_boards_cache.json`) are read as a f
 | Auth verify | `GET /rest/api/2/myself` |
 | Boards (paginated) | `GET /rest/agile/1.0/board?maxResults=50&startAt=N` — loops until `isLast=true` |
 | Resolve assignee | `GET /rest/api/3/user/search?query=<email>` — exact match on emailAddress or displayName |
-| Create issue | `POST /rest/api/2/issue` |
-| Create epic | `POST /rest/api/2/issue` with `issuetype.name=Epic`; tries `customfield_10011` (Epic Name), retries without on error |
+| Create issue | `POST /rest/api/2/issue` (v2) or `POST /rest/api/3/issue` (v3 when `JIRA_USE_ADF=true`) |
+| Create epic | Same endpoint switching as above; tries `customfield_10011` (Epic Name), retries without on error |
 
 All calls use HTTP Basic auth (`email:apiToken`).
 
@@ -164,7 +169,10 @@ All calls use HTTP Basic auth (`email:apiToken`).
 The agile boards endpoint `agile/1.0/board` returns scrum/kanban boards with project context (`location.projectKey`). The v3 projects endpoint returns projects, not boards.
 
 **Why manual JSON building in `CreateIssue`/`CreateEpic`?**
-The description field in REST v2 accepts a plain string. Using `json.Marshal` per field avoids struct-tag noise and handles escaping correctly without a full payload struct.
+The description field in REST v2 accepts a plain string. Using `json.Marshal` per field avoids struct-tag noise and handles escaping correctly without a full payload struct. When `useADF` is true, `toADFJSON` wraps the text in the Atlassian Document Format structure and the v3 endpoint is used instead.
+
+**Why opt-in ADF (`JIRA_USE_ADF`) rather than auto-detecting the Jira version?**
+The Jira Cloud API returns HTTP 200 for both v2 and v3 requests regardless of the instance's preferred format. A v2 plain-string description sent to an ADF-only instance silently creates a ticket with no description — there is no error to detect. An explicit opt-in flag makes the behaviour transparent and reversible.
 
 **Why synchronous DB queries inside `Update`?**
 SQLite local reads/writes are sub-millisecond. Wrapping them in `tea.Cmd` goroutines would add complexity with no UX benefit. The bubbletea model's `Update` function is called on the UI goroutine; a microsecond DB call has no perceptible impact.
@@ -213,20 +221,35 @@ SQLite local reads/writes are sub-millisecond. Wrapping them in `tea.Cmd` gorout
 - **No cache TTL.** A board list cached months ago is still served as the warm cache on startup (with a background sync); there is no maximum age after which a foreground re-fetch is forced. **Fixed in code** (24-hour TTL; caches older than 24 h are treated as a miss, forcing a foreground fetch).
 - **`GetBoards` has no page cap.** If `IsLast` is never true the board-fetch loop runs indefinitely. A limit of ~40 pages would prevent a hang. **Fixed in code** (loop capped at 40 pages = 2 000 boards).
 - **`CreateIssue` uses REST v2 plain-string description.** Instances that require Atlassian Document Format (ADF) will create tickets with no description. **Fixed in code** (set `JIRA_USE_ADF=true` or `JIRA_USE_ADF="true"` in config; switches both `CreateIssue` and `CreateEpic` to REST v3 with ADF-wrapped descriptions; `toADFJSON` handles paragraphs and hard breaks).
-- **No per-ticket assignee fallback visibility.** When an assignee cannot be resolved, the user is not told; the ticket is created as unassigned silently.
+- **No per-ticket assignee fallback visibility.** When an assignee cannot be resolved, the user is not told; the ticket is created as unassigned silently. **Fixed in code** (`!assignee` tag shown in red on the creation row and carried through to the done screen).
 
 ## Build
 
 ```bash
-go build -o jira-tui .
-go mod tidy   # if dependencies have drifted
+make build       # go build -o jira-tui .
+make test        # go test ./...
+make lint        # go vet + shellcheck
+make install     # copy binary to ~/.local/bin
+go mod tidy      # if dependencies have drifted
 ```
+
+### Release
+
+Tag a version to trigger the GitHub Actions release workflow:
+
+```bash
+git tag v1.2.3
+git push origin v1.2.3
+```
+
+The workflow cross-compiles for linux/amd64, linux/arm64, darwin/amd64, darwin/arm64, windows/amd64, windows/arm64, attaches binaries and a SHA256 `checksums.txt` to a GitHub release, and auto-generates release notes from commit messages.
 
 ## Dependencies
 
 | Package | Use |
 |---------|-----|
 | `charmbracelet/bubbletea` | TUI framework (elm arch) |
-| `charmbracelet/bubbles` | textinput, spinner components |
+| `charmbracelet/bubbles` | textinput, textarea, spinner components |
 | `charmbracelet/lipgloss` | Styling and layout |
 | `modernc.org/sqlite` | Pure-Go SQLite driver (no CGO) |
+| `stretchr/testify` | Test assertions (`assert`, `require`) |
