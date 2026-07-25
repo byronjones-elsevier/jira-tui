@@ -199,7 +199,7 @@ SQLite local reads/writes are sub-millisecond. Wrapping them in `tea.Cmd` gorout
 
 - **No delete from history.** `viewShowTickets` is read-only; there is no way to remove a stale or test record from `history.db`. **Fixed in code** (`d` key prompts for confirmation; `y` deletes the record; any other key cancels).
 - **No environment-variable credentials.** `JIRA_BASE_URL`, `JIRA_API_TOKEN`, etc. are only read from the config file; CI/CD pipelines cannot inject credentials without writing a file. (`JIRA_TUI_DIR` for the data directory is supported.) **Fixed in code** (`JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN` env vars now override config file values in `loadConfig`).
-- **No `--project-key` CLI flag.** Board selection is mandatory even when the project key is already known.
+- **No `--project-key` CLI flag.** Board selection is mandatory even when the project key is already known. **Fixed in code** (`-pk`/`--project-key <KEY>` skips board picker; auth still runs to obtain user credentials).
 - **No multi-line description input.** The epic description and ticket descriptions are single-line `textinput` widgets capped at 256 characters; long descriptions must be authored in the CSV.
 - **No CSV export of results.** After creation there is no way to write the `JiraKey → Title` mapping to a file.
 - **No schema migration.** `migrateDB` is a single `CREATE TABLE IF NOT EXISTS`. Adding a column to an existing DB requires a manual `ALTER TABLE`; the code silently does nothing if the table already exists.

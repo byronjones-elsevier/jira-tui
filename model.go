@@ -368,6 +368,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.config.Email = m.client.email
 		m.config.APIToken = m.client.token
 		_ = saveConfig(m.config)
+
+		// --project-key supplied: skip board picker entirely.
+		if m.projectKey != "" {
+			m.loading = false
+			m.screen = screenSettings
+			return m, nil
+		}
+
 		m.screen = screenBoards
 		if cached, cacheAge, ok := loadBoardsCache(m.client.baseURL); ok {
 			m.boards = cached

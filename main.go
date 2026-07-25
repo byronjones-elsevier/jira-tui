@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -19,18 +20,25 @@ const (
 func main() {
 	mode := modeNormal
 	csvPath := "jira_tickets.csv"
+	projectKey := ""
 	showHelp := false
 
-	for _, arg := range os.Args[1:] {
-		switch arg {
+	args := os.Args[1:]
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
 		case "--create-epic", "-ce":
 			mode = modeEpic
 		case "--show-tickets", "-st":
 			mode = modeShow
+		case "--project-key", "-pk":
+			if i+1 < len(args) {
+				i++
+				projectKey = strings.ToUpper(strings.TrimSpace(args[i]))
+			}
 		case "-h", "-H", "--help", "--HELP", "-?":
 			showHelp = true
 		default:
-			csvPath = arg
+			csvPath = args[i]
 		}
 	}
 
@@ -61,6 +69,9 @@ func main() {
 
 	cfg := loadConfig()
 	m := newModel(cfg, tickets, db, mode)
+	if projectKey != "" {
+		m.projectKey = projectKey
+	}
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -75,9 +86,10 @@ USAGE:
   jira-tui [options] [csv-file]
 
 OPTIONS:
-  -ce, --create-epic    Create an epic and link CSV rows as child tickets
-  -st, --show-tickets   Display previously created tickets from local history
-  -h, --help            Show this help message
+  -ce, --create-epic         Create an epic and link CSV rows as child tickets
+  -st, --show-tickets        Display previously created tickets from local history
+  -pk, --project-key <KEY>   Skip board picker and use this Jira project key
+  -h, --help                 Show this help message
 
 ARGUMENTS:
   csv-file    Path to CSV file (default: jira_tickets.csv)
@@ -87,6 +99,7 @@ EXAMPLES:
   jira-tui
   jira-tui tickets.csv
   jira-tui --create-epic tickets.csv
+  jira-tui --project-key MYPROJ tickets.csv
   jira-tui --show-tickets
 
 CONFIG & DATA:
