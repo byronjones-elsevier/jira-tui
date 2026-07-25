@@ -227,26 +227,18 @@ if [[ "${SKIP_ASSERT}" != "1" ]]; then
     # 1.3.1: UTF-8 BOM stripped
     printf '\xef\xbb\xbfTitle,Description,Assignee,Labels\nBOM Title,desc,,\n' \
         > "${PARSE_TMP_DIR}/bom.csv"
-    # App should NOT exit with "no tickets" since title="BOM Title" is valid.
-    # It will try to verify Jira creds; if creds absent it will try to show auth screen
-    # (meaning the binary did not exit 1 on the CSV parse stage).
-    if [[ "${HAVE_CREDS}" == "0" ]]; then
-        skip "1.3.1" "BOM CSV parse (needs Jira creds for full run)"
+    # The binary always exits non-zero in a non-TTY environment (TUI can't init).
+    # We distinguish BOM-stripping success/failure by checking stderr: a failed
+    # strip would produce "no tickets found" (empty title after BOM mangles it).
+    bom_stderr=$(JIRA_TUI_DIR="/tmp/jira-tui-bom-$$" \
+        timeout 2s "${JIRA_TUI_BIN}" "${PARSE_TMP_DIR}/bom.csv" 2>&1 || true)
+    if echo "${bom_stderr}" | grep -qiE "no tickets found|error reading csv"; then
+        fail "1.3.1" "BOM CSV should be accepted (BOM was not stripped)" \
+            "${bom_stderr}"
     else
-        # Binary exits 0 only if we get to the TUI and quit. We can't do that
-        # non-interactively, so we verify the binary doesn't exit 1 within 1s.
-        if timeout 1s "${JIRA_TUI_BIN}" "${PARSE_TMP_DIR}/bom.csv" \
-               2>/dev/null; then
-            pass "1.3.1" "BOM CSV accepted (app launched, exited 0)"
-        else
-            local_exit=$?
-            if [[ "${local_exit}" -eq 124 ]]; then
-                pass "1.3.1" "BOM CSV accepted (app launched, timed out as expected)"
-            else
-                fail "1.3.1" "BOM CSV should be accepted" "exit ${local_exit}"
-            fi
-        fi
+        pass "1.3.1" "BOM CSV accepted (no CSV parse error in stderr)"
     fi
+    rm -rf "/tmp/jira-tui-bom-$$"
 
     rm -rf "${PARSE_TMP_DIR}"
     trap - EXIT

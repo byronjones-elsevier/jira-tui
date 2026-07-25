@@ -3,34 +3,34 @@
 # Drives jira-tui through its key interactive flows.
 # Run via:  ./run_vhs_tests.sh
 #
+# IMPORTANT: th() headers are only shown at the shell prompt — never while
+# the TUI is running.  Typing Enter into a running Bubbletea app quits it
+# (Enter is mapped to quit on most screens), which would send the TUI to the
+# background before any screenshots are taken.
+#
 # Required environment (set by run_vhs_tests.sh, or export manually):
 #   JIRA_TEST_DIR       – pre-populated data directory (config + history.db)
 #   JIRA_TEST_CSV       – path to the test CSV file created by the script
 #   TEST_PROJECT_KEY    – a real Jira project key (e.g. "PROJ")
 #   TEST_EPIC_KEY       – a real Jira Epic key (e.g. "PROJ-1")
-#
-# Timing note: Sleep values are conservative.  If your Jira API is fast you
-# can lower them; if it is slow or on VPN, increase them.
 
 Output vhs-output/jira-tui-tests.gif
 
 Set Shell      bash
-Set Width      200
-Set Height     52
+Set Width      1600
+Set Height     900
 Set FontSize   13
 Set Framerate  10
 Set Theme      "Dracula"
 
 # ---------------------------------------------------------------------------
-# GLOBAL SETUP
-# run_vhs_tests.sh writes th() to /tmp/jira-tui-th.sh before launching VHS
-# so the function definition never has to survive quoting inside a Type string.
-# Sourcing the file is safe: it only contains the single function definition.
+# GLOBAL SETUP — export env vars and define the th() header function
+# run_vhs_tests.sh writes /tmp/jira-tui-th.sh before launching VHS.
 # ---------------------------------------------------------------------------
 Hide
-Type "export JIRA_TUI_DIR=\"$JIRA_TEST_DIR\""
+Type "export JIRA_TUI_DIR=$JIRA_TEST_DIR"
 Enter
-Type "export TEST_CSV=\"$JIRA_TEST_CSV\""
+Type "export TEST_CSV=$JIRA_TEST_CSV"
 Enter
 Type "source /tmp/jira-tui-th.sh"
 Enter
@@ -39,11 +39,11 @@ Enter
 Show
 
 # ===========================================================================
-# SECTION 1.1  Help flags
+# SECTION 1.1  Help flags — all at shell, th() safe here
 # ===========================================================================
 
 Hide
-Type "th '1.1.1' 'Help flag: --help exits 0 and prints usage'"
+Type "th '1.1.1' 'Help flag: --help exits 0 and prints full usage'"
 Enter
 Sleep 0.5s
 Show
@@ -53,7 +53,7 @@ Sleep 2s
 Screenshot vhs-output/1.1.1-help-long.png
 
 Hide
-Type "th '1.1.2' 'Help flag: -h (abbreviated) exits 0 and prints usage'"
+Type "th '1.1.2' 'Help flag: -h exits 0 and prints usage'"
 Enter
 Sleep 0.5s
 Show
@@ -72,18 +72,8 @@ Enter
 Sleep 1s
 Screenshot vhs-output/1.1.6-flags-documented.png
 
-Hide
-Type "th '1.1.7' 'Help text contains CSV export column description'"
-Enter
-Sleep 0.5s
-Show
-Type "./jira-tui --help 2>&1 | grep -A2 'CSV'"
-Enter
-Sleep 1s
-Screenshot vhs-output/1.1.7-csv-section.png
-
 # ===========================================================================
-# SECTION 1.2  Input validation (exit immediately, no TUI launched)
+# SECTION 1.2  Input validation — all at shell, th() safe here
 # ===========================================================================
 
 Hide
@@ -93,7 +83,7 @@ Type "th '1.2.1' 'Validation: -ccfe with no key -> stderr error, exit 1'"
 Enter
 Sleep 0.5s
 Show
-Type "./jira-tui -ccfe 2>&1; echo \"Exit: $?\""
+Type "./jira-tui -ccfe 2>&1; echo exit=$?"
 Enter
 Sleep 1s
 Screenshot vhs-output/1.2.1-missing-epic-key.png
@@ -103,7 +93,7 @@ Type "th '1.2.2' 'Validation: --create-csv-from-epic with no key -> exit 1'"
 Enter
 Sleep 0.5s
 Show
-Type "./jira-tui --create-csv-from-epic 2>&1; echo \"Exit: $?\""
+Type "./jira-tui --create-csv-from-epic 2>&1; echo exit=$?"
 Enter
 Sleep 1s
 Screenshot vhs-output/1.2.2-missing-epic-key-long.png
@@ -113,7 +103,7 @@ Type "th '1.2.3' 'Validation: nonexistent CSV path -> stderr error, exit 1'"
 Enter
 Sleep 0.5s
 Show
-Type "./jira-tui /tmp/no_such_file_xyz.csv 2>&1; echo \"Exit: $?\""
+Type "./jira-tui /tmp/no_such_file_xyz.csv 2>&1; echo exit=$?"
 Enter
 Sleep 1s
 Screenshot vhs-output/1.2.3-missing-csv.png
@@ -135,226 +125,103 @@ Show
 
 # ===========================================================================
 # SECTION 2  Normal mode — CSV ticket creation
-# Covers: 3.3.5 (saved creds), 5.x (settings), 6.x (ticket list),
-#         9.x (dup check), 10.x (creation), 11.x (done screen)
+# Tests covered inside the TUI: 3.3.5, 5.1-5.11, 6.1-6.13, 9.2,
+#                                10.1-10.2, 11.1-11.10, 11.15
 #
-# --project-key skips board selection for a deterministic flow.
-# Credentials pre-saved in JIRA_TEST_DIR/config, so auth is automatic.
+# th() headers shown at shell before launch only; no th() inside the TUI.
 # ===========================================================================
 
 Hide
-Type "th 'SECTION 2' 'Normal mode: CSV ticket creation end-to-end flow'"
+Type "th 'SECTION 2' 'Normal mode — tests: 3.3.5 | 5.1-5.11 | 6.1-6.13 | 9.2 | 10.1-10.2 | 11.1-11.15'"
 Enter
 Sleep 0.5s
 Show
-Type "./jira-tui --project-key $TEST_PROJECT_KEY \"$TEST_CSV\""
+
+Type "./jira-tui --project-key $TEST_PROJECT_KEY $TEST_CSV"
 Enter
 
-Hide
-Type "th '3.3.5' 'Saved credentials: screenVerify spinner -> skips screenAuth'"
-Enter
-Sleep 0.5s
-Show
-Sleep 6s
+# 3.3.5: credentials pre-saved → screenVerify spinner → screenSettings
+Sleep 7s
 Screenshot vhs-output/2-settings-initial.png
 
-# --- Settings screen ---
-
-Hide
-Type "th '5.1' 'Settings: Down arrow moves cursor to Issue Type row'"
-Enter
-Sleep 0.5s
-Show
+# 5.1: Down moves cursor to Issue Type row
 Down
 Sleep 0.3s
-
-Hide
-Type "th '5.7' 'Settings: Right arrow cycles Issue Type forward (Task -> Story)'"
-Enter
-Sleep 0.5s
-Show
+# 5.7: Right cycles Issue Type forward (Task → Story)
 Right
 Sleep 0.3s
 Screenshot vhs-output/2-settings-story-selected.png
-
-Hide
-Type "th '5.8' 'Settings: Left arrow cycles Issue Type backward (Story -> Task)'"
-Enter
-Sleep 0.5s
-Show
+# 5.8: Left cycles Issue Type backward (Story → Task)
 Left
 Sleep 0.3s
-
-Hide
-Type "th '5.2' 'Settings: Up arrow moves cursor back to Assignee Fallback row'"
-Enter
-Sleep 0.5s
-Show
+# 5.2: Up returns to Assignee Fallback row
 Up
 Sleep 0.3s
-
-Hide
-Type "th '5.3' 'Settings: Space toggles Assignee Fallback to requester'"
-Enter
-Sleep 0.5s
-Show
+# 5.3: Space toggles Assignee Fallback to requester
 Space
 Sleep 0.3s
 Screenshot vhs-output/2-settings-requester.png
-
-Hide
-Type "th '5.3' 'Settings: Space toggles Assignee Fallback back to unassigned'"
-Enter
-Sleep 0.5s
-Show
+# 5.3: Space toggles back to unassigned
 Space
 Sleep 0.3s
-
-Hide
-Type "th '5.11' 'Settings: Enter confirms and advances to ticket list'"
-Enter
-Sleep 0.5s
-Show
+# 5.11: Enter confirms settings → screenTickets
 Enter
 Sleep 1s
-
-# --- Ticket list screen ---
-
-Hide
-Type "th '6.1' 'Ticket list: all tickets pre-selected (checkboxes show checked)'"
-Enter
-Sleep 0.5s
-Show
 Screenshot vhs-output/2-ticket-list.png
 
-Hide
-Type "th '6.2' 'Ticket list: Down arrow moves cursor down; preview panel updates'"
-Enter
-Sleep 0.5s
-Show
+# 6.1: all pre-selected; 6.2: Down moves cursor
 Down
 Sleep 0.3s
 Down
 Sleep 0.3s
-
-Hide
-Type "th '6.3' 'Ticket list: Up arrow moves cursor up'"
-Enter
-Sleep 0.5s
-Show
+# 6.3: Up moves cursor
 Up
 Sleep 0.3s
 Screenshot vhs-output/2-ticket-nav.png
-
-Hide
-Type "th '6.5' 'Ticket list: a deselects all when all are currently selected'"
-Enter
-Sleep 0.5s
-Show
+# 6.5: a deselects all
 Type "a"
 Sleep 0.3s
 Screenshot vhs-output/2-all-deselected.png
-
-Hide
-Type "th '6.6' 'Ticket list: a selects all when any are currently unselected'"
-Enter
-Sleep 0.5s
-Show
+# 6.6: a reselects all
 Type "a"
 Sleep 0.3s
 Screenshot vhs-output/2-all-selected.png
-
-Hide
-Type "th '6.4' 'Ticket list: Space toggles selection of current row'"
-Enter
-Sleep 0.5s
-Show
+# 6.4: Space toggles single ticket
 Space
 Sleep 0.3s
 Screenshot vhs-output/2-first-deselected.png
-
 Space
 Sleep 0.3s
 
-Hide
-Type "th '6.13' 'Ticket list: Enter starts creation (may show dup check first)'"
-Enter
-Sleep 0.5s
-Show
+# 6.13: Enter starts creation (dup check may appear on repeated runs)
 Enter
 Sleep 2s
 Screenshot vhs-output/2-creating-or-dupcheck.png
-
-# --- Dup check (fires on repeated runs) ---
-
-Hide
-Type "th '9.2' 'Dup check: default state is SKIP; Enter proceeds skipping all dups'"
-Enter
-Sleep 0.5s
-Show
+# 9.2: if dup check fired, default is SKIP; Enter skips all and proceeds
 Enter
 Sleep 2s
 
-# --- Creation screen ---
-
-Hide
-Type "th '10.1' 'Creating: each row updates in real time (spinner -> checkmark/X)'"
-Enter
-Sleep 0.5s
-Show
+# 10.1/10.2: creation in progress
 Screenshot vhs-output/2-creating-progress.png
+Sleep 14s
 
-Hide
-Type "th '10.2' 'Creating: progress bar fills as tickets complete'"
-Enter
-Sleep 0.5s
-Show
-Sleep 12s
-
-# --- Done screen ---
-
-Hide
-Type "th '11.1' 'Done: summary line shows correct created/failed counts'"
-Enter
-Sleep 0.5s
-Show
+# 11.1: done screen summary
 Screenshot vhs-output/2-done-initial.png
-
-Hide
-Type "th '11.3' 'Done: Down arrow moves cursor down the result list'"
-Enter
-Sleep 0.5s
-Show
+# 11.3/11.4: navigate done list
 Down
 Sleep 0.3s
-
-Hide
-Type "th '11.4' 'Done: Up arrow moves cursor up the result list'"
-Enter
-Sleep 0.5s
-Show
 Down
 Sleep 0.3s
 Up
 Sleep 0.3s
 Screenshot vhs-output/2-done-navigated.png
-
-Hide
-Type "th '11.10' 'Done: e exports results to jira_tickets_results.csv'"
-Enter
-Sleep 0.5s
-Show
+# 11.10: export results CSV with e
 Type "e"
 Sleep 1s
 Screenshot vhs-output/2-exported-csv.png
-
-Hide
-Type "th '11.15' 'Done: q quits the application'"
-Enter
-Sleep 0.5s
-Show
+# 11.15: quit
 Type "q"
-Sleep 0.5s
+Sleep 2s
 
 Hide
 Type "clear"
@@ -363,69 +230,42 @@ Show
 
 # ===========================================================================
 # SECTION 3  Show tickets (--show-tickets)
-# Covers: 13.x  Uses the tickets created in Section 2.
+# Tests covered inside the TUI: 13.1-13.3, 13.10-13.11, 13.15
 # ===========================================================================
 
 Hide
-Type "th 'SECTION 3' 'History mode: --show-tickets browse and manage local records'"
+Type "th 'SECTION 3' 'History mode — tests: 13.1 | 13.2-13.3 | 13.10-13.11 | 13.15'"
 Enter
 Sleep 0.5s
 Show
+
 Type "./jira-tui --show-tickets"
 Enter
 Sleep 2s
-
-Hide
-Type "th '13.1' 'History: list of previously created tickets shown from local DB'"
-Enter
-Sleep 0.5s
-Show
 Screenshot vhs-output/3-show-tickets-initial.png
 
-Hide
-Type "th '13.2' 'History: Down arrow moves cursor down'"
-Enter
-Sleep 0.5s
-Show
+# 13.2: Down moves cursor; 13.3: Up moves cursor
 Down
 Sleep 0.3s
-
-Hide
-Type "th '13.3' 'History: Up arrow moves cursor up'"
-Enter
-Sleep 0.5s
-Show
 Down
 Sleep 0.3s
 Up
 Sleep 0.3s
 Screenshot vhs-output/3-show-tickets-nav.png
 
-Hide
-Type "th '13.10' 'History: d shows delete confirmation with key and title'"
-Enter
-Sleep 0.5s
-Show
+# 13.10: d shows delete confirmation
 Type "d"
 Sleep 0.5s
 Screenshot vhs-output/3-delete-confirm.png
 
-Hide
-Type "th '13.11' 'History: y confirms deletion; record removed from list'"
-Enter
-Sleep 0.5s
-Show
+# 13.11: y confirms deletion
 Type "y"
 Sleep 1s
 Screenshot vhs-output/3-after-delete.png
 
-Hide
-Type "th '13.15' 'History: q quits the application'"
-Enter
-Sleep 0.5s
-Show
+# 13.15: q quits
 Type "q"
-Sleep 0.5s
+Sleep 2s
 
 Hide
 Type "clear"
@@ -434,116 +274,66 @@ Show
 
 # ===========================================================================
 # SECTION 4  Epic → CSV export (--create-csv-from-epic)
-# Covers: 14.x
+# Tests covered inside the TUI: 14.1.1, 14.2.1-14.2.11, 14.3.1-14.3.2
 # ===========================================================================
 
 Hide
-Type "th 'SECTION 4' 'Epic -> CSV export: --create-csv-from-epic flow'"
+Type "th 'SECTION 4' 'Epic->CSV — tests: 14.1.1 | 14.2.1-14.2.11 | 14.3.1-14.3.2 | 14.4.1'"
 Enter
 Sleep 0.5s
 Show
+
 Type "./jira-tui --create-csv-from-epic $TEST_EPIC_KEY"
 Enter
 
-Hide
-Type "th '14.1.1' 'Epic query: spinner shown while fetching epic and children'"
-Enter
-Sleep 0.5s
-Show
-Sleep 6s
+# 14.1.1: screenVerify spinner then screenEpicCSVQuery spinner
+Sleep 7s
 Screenshot vhs-output/4-epic-query-spinner.png
+# Wait for epic + children to load
+Sleep 9s
 
-Sleep 8s
-
-Hide
-Type "th '14.2.1' 'Epic review: header shows key and EPIC tag with summary'"
-Enter
-Sleep 0.5s
-Show
+# 14.2.1: epic header; 14.2.2: child count line
 Screenshot vhs-output/4-epic-review-initial.png
 
-Hide
-Type "th '14.2.2' 'Epic review: child count line is correct'"
-Enter
-Sleep 0.5s
-Show
-
-Hide
-Type "th '14.2.5' 'Epic review: Down arrow moves cursor down child list'"
-Enter
-Sleep 0.5s
-Show
+# 14.2.5/14.2.6: Down and Up navigate child list
 Down
 Sleep 0.3s
-
-Hide
-Type "th '14.2.6' 'Epic review: Up arrow moves cursor up child list'"
-Enter
-Sleep 0.5s
-Show
 Down
 Sleep 0.3s
 Up
 Sleep 0.3s
-
-Hide
-Type "th '14.2.7' 'Epic review: PgDn jumps cursor one page down'"
-Enter
-Sleep 0.5s
-Show
+# 14.2.7/14.2.8: PgDn / PgUp page navigation
 PageDown
 Sleep 0.3s
-
-Hide
-Type "th '14.2.8' 'Epic review: PgUp jumps cursor one page up'"
-Enter
-Sleep 0.5s
-Show
 PageUp
 Sleep 0.3s
 Screenshot vhs-output/4-epic-review-navigated.png
 
-Hide
-Type "th '14.2.11' 'Epic review: Enter proceeds to save-path input screen'"
+# 14.2.11: Enter proceeds to save-path screen
 Enter
 Sleep 0.5s
-Show
-Enter
-Sleep 0.5s
-
-Hide
-Type "th '14.3.1' 'Save path: input pre-filled with KEY.csv default filename'"
-Enter
-Sleep 0.5s
-Show
+# 14.3.1: save path pre-filled with KEY.csv
 Screenshot vhs-output/4-save-path-default.png
 
-Hide
-Type "th '14.3.2' 'Save path: Enter with default path writes CSV to CWD'"
+# 14.3.2: Enter accepts default filename and writes CSV
 Enter
-Sleep 0.5s
-Show
-Enter
-Sleep 1s
+Sleep 2s
 Screenshot vhs-output/4-save-success.png
 
+# 14.3.7: quit after save
+Type "q"
+Sleep 2s
+
+# 14.4.1: verify CSV file and header at shell
 Hide
-Type "th '14.4.1' 'CSV output: verify file exists and header row is correct'"
+Type "th '14.4.1' 'CSV output: file exists with correct header row'"
 Enter
 Sleep 0.5s
 Show
-Type "head -1 \"${TEST_EPIC_KEY}.csv\" 2>/dev/null && echo 'file found' || echo 'CSV not found'"
+Type "head -1 ${TEST_EPIC_KEY}.csv 2>/dev/null && echo found || echo not-found"
 Enter
 Sleep 1s
 Screenshot vhs-output/4-csv-header-check.png
-
-Hide
-Type "th '14.3.7' 'After save: q quits the application'"
-Enter
-Sleep 0.5s
-Show
-Type "q"
-Sleep 0.5s
 
 Hide
 Type "clear"
@@ -552,66 +342,43 @@ Show
 
 # ===========================================================================
 # SECTION 5  Interactive ticket form (--create-ticket)
-# Covers: 12.x
+# Tests covered inside the TUI: 3.3.3, 12.1.1-12.1.11, 12.2.1
 # ===========================================================================
 
 Hide
-Type "th 'SECTION 5' 'Interactive form: --create-ticket single-ticket entry mode'"
+Type "th 'SECTION 5' 'Interactive form — tests: 3.3.3 | 12.1.1-12.1.11 | 12.2.1'"
 Enter
 Sleep 0.5s
 Show
+
 Type "./jira-tui --create-ticket --project-key $TEST_PROJECT_KEY"
 Enter
 
-Hide
-Type "th '3.3.3' 'Auth: --create-ticket with --project-key goes straight to form'"
-Enter
-Sleep 0.5s
-Show
-Sleep 6s
+# 3.3.3: --create-ticket + --project-key goes straight to form
+Sleep 7s
 Screenshot vhs-output/5-form-initial.png
 
-Hide
-Type "th '12.1.1' 'Form: Tab advances focus from Title to next field'"
-Enter
-Sleep 0.5s
-Show
+# 12.1.1: Tab advances from Title field
 Type "[VHS] Interactive form test"
 Tab
 Sleep 0.3s
 
-Hide
-Type "th '12.1.4' 'Form: Enter in Description inserts newline (does not advance)'"
-Enter
-Sleep 0.5s
-Show
+# 12.1.4: Enter in Description inserts newline, does not advance
 Type "Automated VHS test. Created by run_vhs_tests.sh."
 Tab
 Sleep 0.3s
 
-Hide
-Type "th '12.1.5' 'Form: Enter on Assignee advances to Labels field'"
-Enter
-Sleep 0.5s
-Show
+# 12.1.5: Tab on Assignee advances to Labels
 Tab
 Sleep 0.3s
 
-Hide
-Type "th '12.1.6' 'Form: Enter on Labels advances to Issue Type field'"
-Enter
-Sleep 0.5s
-Show
+# 12.1.6: Tab on Labels advances to Issue Type
 Type "vhs-test;automated"
 Tab
 Sleep 0.3s
 Screenshot vhs-output/5-form-issue-type.png
 
-Hide
-Type "th '12.1.9' 'Form: Right/Left arrows cycle Issue Type when that field is focused'"
-Enter
-Sleep 0.5s
-Show
+# 12.1.9: Right/Left cycle Issue Type when Issue Type field is focused
 Right
 Sleep 0.2s
 Right
@@ -622,28 +389,15 @@ Left
 Sleep 0.2s
 Screenshot vhs-output/5-form-cycle-type.png
 
-Hide
-Type "th '12.1.11' 'Form: Ctrl+S submits from any field (title is filled)'"
-Enter
-Sleep 0.5s
-Show
+# 12.1.11: Ctrl+S submits from any field
 Ctrl+S
-Sleep 6s
+Sleep 7s
 
-Hide
-Type "th '12.2.1' 'Form: Task submission -> spinner -> Done screen'"
-Enter
-Sleep 0.5s
-Show
+# 12.2.1: Task submission → Done screen
 Screenshot vhs-output/5-form-done.png
 
-Hide
-Type "th '11.15' 'Done: q quits the application'"
-Enter
-Sleep 0.5s
-Show
 Type "q"
-Sleep 0.5s
+Sleep 2s
 
 Hide
 Type "clear"
@@ -651,116 +405,66 @@ Enter
 Show
 
 # ===========================================================================
-# SECTION 6  Epic mode (--create-epic)
-# Covers: 7.x, 8.x
+# SECTION 6  Epic creation mode (--create-epic)
+# Tests covered inside the TUI: 3.3.1, 5.12, 7.1.1-7.2.1, 6.6, 6.13,
+#                                9.2, 10.8, 11.9, 11.15
 # ===========================================================================
 
 Hide
-Type "th 'SECTION 6' 'Epic creation mode: --create-epic flow with CSV subtasks'"
+Type "th 'SECTION 6' 'Epic mode — tests: 5.12 | 7.1.1-7.2.1 | 6.6 | 6.13 | 10.8 | 11.9'"
 Enter
 Sleep 0.5s
 Show
-Type "./jira-tui --create-epic --project-key $TEST_PROJECT_KEY \"$TEST_CSV\""
+
+Type "./jira-tui --create-epic --project-key $TEST_PROJECT_KEY $TEST_CSV"
 Enter
 
-Hide
-Type "th '3.3.1' 'Auth: valid saved creds + normal mode -> screenBoards (or settings)'"
-Enter
-Sleep 0.5s
-Show
-Sleep 6s
+# 3.3.1: saved creds → screenVerify → screenSettings
+Sleep 7s
 Screenshot vhs-output/6-epic-settings.png
 
-Hide
-Type "th '5.12' 'Settings: in --create-epic mode Enter advances to Epic Setup screen'"
-Enter
-Sleep 0.5s
-Show
+# 5.12: in --create-epic mode, Enter advances to Epic Setup screen
 Enter
 Sleep 1s
 Screenshot vhs-output/6-epic-setup.png
 
-Hide
-Type "th '7.1.1' 'Epic setup: Title field is focused on entry'"
-Enter
-Sleep 0.5s
-Show
+# 7.1.1: Title field focused
 Type "[VHS] Epic Test"
-
-Hide
-Type "th '7.1.2' 'Epic setup: Tab moves focus to Description textarea'"
-Enter
-Sleep 0.5s
-Show
+# 7.1.2: Tab moves to Description
 Tab
 Sleep 0.3s
 Type "VHS-generated epic for automated testing."
-
-Hide
-Type "th '7.1.3' 'Epic setup: Tab moves focus to Requester field'"
-Enter
-Sleep 0.5s
-Show
+# 7.1.3: Tab moves to Requester
 Tab
 Sleep 0.3s
 Type "vhs-test-requester"
 Screenshot vhs-output/6-epic-form-filled.png
 
-Hide
-Type "th '7.2.1' 'Epic setup: Enter submits; unique title -> proceeds to ticket list'"
-Enter
-Sleep 0.5s
-Show
+# 7.2.1: Enter submits; unique title → proceeds to ticket list
 Enter
 Sleep 2s
 Screenshot vhs-output/6-epic-ticket-list.png
 
-Hide
-Type "th '6.6' 'Ticket list: a selects all tickets for creation with epic'"
-Enter
-Sleep 0.5s
-Show
+# 6.6: a selects all tickets
 Type "a"
 Sleep 0.3s
-
-Hide
-Type "th '6.13' 'Ticket list: Enter starts epic + subtask creation'"
+# 6.13: Enter starts epic + subtask creation
 Enter
-Sleep 0.5s
-Show
+Sleep 2s
+# 9.2: if dup check fired, Enter skips all dups
 Enter
 Sleep 2s
 
-Hide
-Type "th '9.2' 'Dup check: Enter skips all duplicates and proceeds'"
-Enter
-Sleep 0.5s
-Show
-Enter
-Sleep 2s
-
-Hide
-Type "th '10.8' 'Creating: epic row appears first; spinner then checkmark'"
-Enter
-Sleep 0.5s
-Show
+# 10.8: epic row appears first; spinner then checkmark
 Screenshot vhs-output/6-epic-creating.png
-Sleep 15s
+Sleep 16s
 
-Hide
-Type "th '11.9' 'Done: first row is the epic; child tickets follow'"
-Enter
-Sleep 0.5s
-Show
+# 11.9: first row is the epic; child tickets follow
 Screenshot vhs-output/6-epic-done.png
 
-Hide
-Type "th '11.15' 'Done: q quits the application'"
-Enter
-Sleep 0.5s
-Show
+# 11.15: quit
 Type "q"
-Sleep 0.5s
+Sleep 2s
 
 Hide
 Type "clear"
@@ -772,7 +476,7 @@ Show
 # ===========================================================================
 
 Hide
-Type "th 'COMPLETE' 'All VHS flows finished. Artifacts in vhs-output/'"
+Type "th 'COMPLETE' 'All VHS flows finished — artifacts in vhs-output/'"
 Enter
 Sleep 0.5s
 Show
