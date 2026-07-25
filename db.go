@@ -50,6 +50,18 @@ func ensureAppDir() error {
 	return os.MkdirAll(appDir(), 0700)
 }
 
+// isFirstRun reports whether the app data directory does not yet exist.
+// Returns false when either JIRA_TUI_DIR or the internal test override is set,
+// so the prompt is never shown during tests or when the user has explicitly
+// configured a non-default location.
+func isFirstRun() bool {
+	if appDirOverride != "" || os.Getenv("JIRA_TUI_DIR") != "" {
+		return false
+	}
+	_, err := os.Stat(appDir())
+	return os.IsNotExist(err)
+}
+
 func dbPath() string {
 	return filepath.Join(appDir(), "history.db")
 }

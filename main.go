@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"fmt"
 	"os"
 	"strings"
@@ -50,12 +51,20 @@ func main() {
 		return
 	}
 
-	db, err := openDB()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error opening database: %v\n", err)
-		os.Exit(1)
+	firstRun := isFirstRun()
+
+	var (
+		db  *sql.DB
+		err error
+	)
+	if !firstRun {
+		db, err = openDB()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error opening database: %v\n", err)
+			os.Exit(1)
+		}
+		defer db.Close()
 	}
-	defer db.Close()
 
 	var tickets []Ticket
 	if mode != modeShow && mode != modeManual {
@@ -71,7 +80,7 @@ func main() {
 	}
 
 	cfg := loadConfig()
-	m := newModel(cfg, tickets, db, mode)
+	m := newModel(cfg, tickets, db, mode, firstRun)
 	if projectKey != "" {
 		m.projectKey = projectKey
 	}

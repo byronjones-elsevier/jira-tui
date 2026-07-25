@@ -35,6 +35,7 @@ const (
 	screenShowTickets                 // browse local history
 	screenManualEntry                 // interactive single-ticket form (modeManual)
 	screenManualContinue              // "add subtask or finish?" prompt after epic creation
+	screenFirstRun                    // first-launch welcome / data-dir creation prompt
 )
 
 // ── Messages ─────────────────────────────────────────────────────────────────
@@ -182,11 +183,12 @@ type model struct {
 	loading    bool
 	loadingMsg string
 	err        error
+	firstRun   bool // true on first launch before data dir is created
 }
 
 // ── Constructor ───────────────────────────────────────────────────────────────
 
-func newModel(cfg Config, tickets []Ticket, db *sql.DB, mode appMode) model {
+func newModel(cfg Config, tickets []Ticket, db *sql.DB, mode appMode, firstRun bool) model {
 	// Auth inputs: URL, email, token.
 	authInps := make([]textinput.Model, 3)
 	for i, ph := range []string{
@@ -278,6 +280,13 @@ func newModel(cfg Config, tickets []Ticket, db *sql.DB, mode appMode) model {
 		results:          make([]CreateResult, len(tickets)),
 	}
 
+	// First-run: show setup prompt before doing anything else.
+	if firstRun {
+		m.firstRun = true
+		m.screen = screenFirstRun
+		return m
+	}
+
 	// --show-tickets: skip Jira auth entirely.
 	if mode == modeShow {
 		m.screen = screenShowTickets
@@ -303,6 +312,9 @@ func newModel(cfg Config, tickets []Ticket, db *sql.DB, mode appMode) model {
 // ── Init ──────────────────────────────────────────────────────────────────────
 
 func (m model) Init() tea.Cmd {
+	if m.screen == screenFirstRun {
+		return nil
+	}
 	if m.mode == modeShow {
 		return tea.Batch(m.spinner.Tick, m.cmdLoadHistory())
 	}
@@ -633,6 +645,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch m.screen {
+	case screenFirstRun:
+		return m.handleFirstRunKey(msg)
 	case screenAuth:
 		return m.handleAuthKey(msg)
 	case screenBoards:
@@ -977,6 +991,54 @@ func (m model) doneRowCount() int {
 		}
 	}
 	return n
+}
+
+// ── First-run keys ────────────────────────────────────────────────────────────
+
+func (m model) handleFirstRunKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch strings.ToLower(msg.String()) {
+	case "y", "enter":
+		return m.confirmFirstRun()
+	case "n", "esc", "q":
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+// confirmFirstRun creates the data directory and database, then transitions
+// to the normal startup screen (auth or verify).
+func (m model) confirmFirstRun() (model, tea.Cmd) {
+	m.firstRun = false
+	if err := ensureAppDir(); err != nil {
+		m.err = fmt.Errorf("could not create %s: %v", appDir(), err)
+		m.screen = screenFirstRun
+		return m, nil
+	}
+	db, err := openDB()
+	if err != nil {
+		m.err = fmt.Errorf("could not open database: %v", err)
+		m.screen = screenFirstRun
+		return m, nil
+	}
+	m.db = db
+
+	if m.mode == modeShow {
+		m.screen = screenShowTickets
+		m.histLoading = true
+		return m, tea.Batch(m.spinner.Tick, m.cmdLoadHistory())
+	}
+
+	hasCreds := m.config.BaseURL != "" && m.config.Email != "" && m.config.APIToken != ""
+	if hasCreds {
+		m.screen = screenVerify
+		m.loading = true
+		m.loadingMsg = "Verifying saved credentials…"
+		m.client = newJiraClient(m.config.BaseURL, m.config.Email, m.config.APIToken)
+		m.client.useADF = m.config.UseADF
+		return m, tea.Batch(textinput.Blink, m.spinner.Tick, m.cmdVerifyAuth())
+	}
+	m.screen = screenAuth
+	return m, tea.Batch(textinput.Blink, m.spinner.Tick, m.authInputs[0].Focus())
 }
 
 // ── Auth keys ─────────────────────────────────────────────────────────────────
@@ -1604,6 +1666,8 @@ func (m model) View() string {
 		return m.viewManualEntry()
 	case screenManualContinue:
 		return m.viewManualContinue()
+	case screenFirstRun:
+		return m.viewFirstRun()
 	}
 	return ""
 }
@@ -1611,6 +1675,43 @@ func (m model) View() string {
 func (m model) viewSpinner(msg string) string {
 	content := m.spinner.View() + "  " + subtitleStyle.Render(msg)
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, content)
+}
+
+// ── First-run view ────────────────────────────────────────────────────────────
+
+func (m model) viewFirstRun() string {
+	dir := appDir()
+
+	errLine := ""
+	if m.err != nil {
+		errLine = "\n" + errorStyle.Render("⚠  "+m.err.Error())
+	}
+
+	prompt := successStyle.Render("[Y]") + dimStyle.Render("es, create it") + "   " +
+		dimStyle.Render("[N]") + dimStyle.Render("o, quit")
+
+	envHint := dimStyle.Render("Override location: JIRA_TUI_DIR=/your/path jira-tui")
+
+	body := lipgloss.JoinVertical(lipgloss.Left,
+		titleStyle.Render("Welcome to jira-tui"),
+		"",
+		subtitleStyle.Render("This appears to be your first time running the app."),
+		"",
+		"A data directory will be created at:",
+		successStyle.Render("  "+dir+"/"),
+		"",
+		dimStyle.Render("It will contain:"),
+		dimStyle.Render("  config      — Jira credentials and settings"),
+		dimStyle.Render("  history.db  — local ticket creation history"),
+		errLine,
+		"",
+		"Create it now?  "+prompt,
+		"",
+		envHint,
+	)
+
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center,
+		panelStyle.Width(62).Render(body))
 }
 
 // ── Auth view ─────────────────────────────────────────────────────────────────
