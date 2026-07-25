@@ -164,6 +164,12 @@ func findEpicsByTitle(db *sql.DB, title string) ([]TicketRecord, error) {
 	return scanTickets(rows)
 }
 
+// deleteTicket removes a single history record by ID.
+func deleteTicket(db *sql.DB, id int64) error {
+	_, err := db.Exec(`DELETE FROM tickets WHERE id = ?`, id)
+	return err
+}
+
 // allTickets returns all history records, newest first.
 func allTickets(db *sql.DB) ([]TicketRecord, error) {
 	rows, err := db.Query(

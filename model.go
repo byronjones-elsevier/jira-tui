@@ -141,10 +141,11 @@ type model struct {
 	doneOffset int
 
 	// Show tickets (screenShowTickets)
-	histRecords []TicketRecord
-	histCursor  int
-	histOffset  int
-	histLoading bool
+	histRecords       []TicketRecord
+	histCursor        int
+	histOffset        int
+	histLoading       bool
+	histConfirmDelete bool // true while waiting for y/n confirmation
 
 	// UI helpers
 	spinner    spinner.Model
@@ -1005,6 +1006,30 @@ func (m model) handleShowTicketsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.histLoading {
 		return m, nil
 	}
+
+	if m.histConfirmDelete {
+		switch msg.String() {
+		case "y", "Y":
+			if len(m.histRecords) > 0 {
+				rec := m.histRecords[m.histCursor]
+				_ = deleteTicket(m.db, rec.ID)
+				m.histRecords = append(m.histRecords[:m.histCursor], m.histRecords[m.histCursor+1:]...)
+				if m.histCursor >= len(m.histRecords) {
+					m.histCursor = maxInt(0, len(m.histRecords)-1)
+				}
+				ps := m.histPageSize()
+				maxOff := maxInt(0, len(m.histRecords)-ps)
+				if m.histOffset > maxOff {
+					m.histOffset = maxOff
+				}
+			}
+			m.histConfirmDelete = false
+		default:
+			m.histConfirmDelete = false
+		}
+		return m, nil
+	}
+
 	switch msg.String() {
 	case "up", "k":
 		if m.histCursor > 0 {
@@ -1041,6 +1066,10 @@ func (m model) handleShowTicketsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		maxOff := maxInt(0, len(m.histRecords)-ps)
 		if m.histOffset > maxOff {
 			m.histOffset = maxOff
+		}
+	case "d":
+		if len(m.histRecords) > 0 {
+			m.histConfirmDelete = true
 		}
 	case "q", "esc", "enter":
 		return m, tea.Quit
@@ -1662,8 +1691,14 @@ func (m model) viewShowTickets() string {
 	if scrollHint != "" {
 		parts = append(parts, scrollHint)
 	}
-	parts = append(parts, footerStyle.Width(w).Render(
-		"↑↓/jk navigate  •  PgUp/PgDn jump  •  q / Esc to quit"))
+	var footerText string
+	if m.histConfirmDelete && len(m.histRecords) > 0 {
+		rec := m.histRecords[m.histCursor]
+		footerText = errorStyle.Render(fmt.Sprintf("Delete %s %q? (y/N)", rec.JiraKey, truncate(rec.Title, 30)))
+	} else {
+		footerText = "↑↓/jk navigate  •  PgUp/PgDn jump  •  d delete  •  q / Esc to quit"
+	}
+	parts = append(parts, footerStyle.Width(w).Render(footerText))
 
 	body := lipgloss.JoinVertical(lipgloss.Left, parts...)
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Top,
