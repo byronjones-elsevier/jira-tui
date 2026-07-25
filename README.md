@@ -164,6 +164,8 @@ Add dark mode,Implement dark theme support,,feature;ui
 |-----|--------|
 | `↑` `↓` / `j` `k` | Navigate |
 | `/` | Focus filter bar — type to narrow by title, key, type, or parent |
+| `s` | Cycle sort field: Date → Key → Title → Type → Date |
+| `S` | Reverse sort direction on the current field |
 | `o` | Open selected ticket URL in browser |
 | `d` | Delete local record only (prompts for confirmation) |
 | `D` | Delete from Jira AND local history (prompts for confirmation; requires "Delete Issues" permission) |

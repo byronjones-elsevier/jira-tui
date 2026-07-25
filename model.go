@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -195,14 +196,16 @@ type model struct {
 	exportCSVResultPending string          // staged path awaiting overwrite confirm
 
 	// Show tickets (screenShowTickets)
-	histRecords          []TicketRecord
-	histCursor           int
-	histOffset           int
-	histLoading          bool
-	histSearch           textinput.Model
-	histConfirmDelete    bool  // true while waiting for y/n on local-only delete
+	histRecords           []TicketRecord
+	histCursor            int
+	histOffset            int
+	histLoading           bool
+	histSearch            textinput.Model
+	histSortField         string // "date" | "key" | "title" | "type"
+	histSortAsc           bool
+	histConfirmDelete     bool  // true while waiting for y/n on local-only delete
 	histConfirmDeleteJira bool  // true while waiting for y/n on Jira + local delete
-	histJiraDeleteErr    error // set when a Jira delete fails
+	histJiraDeleteErr     error // set when a Jira delete fails
 
 	// UI helpers
 	spinner    spinner.Model
@@ -324,6 +327,8 @@ func newModel(cfg Config, tickets []Ticket, db *sql.DB, mode appMode, firstRun b
 		epicCSVPathInp:     epicCSVInp,
 		exportCSVResultInp: exportResultInp,
 		histSearch:         histSearchInp,
+		histSortField:      "date",
+		histSortAsc:        false,
 		spinner:            s,
 		selectedTickets:  selected,
 		assigneeFallback: af,
@@ -1958,6 +1963,20 @@ func (m model) handleShowTicketsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "/":
 		return m, m.histSearch.Focus()
+	case "s":
+		fields := []string{"date", "key", "title", "type"}
+		naturalAsc := map[string]bool{"date": false, "key": true, "title": true, "type": true}
+		for i, f := range fields {
+			if f == m.histSortField {
+				m.histSortField = fields[(i+1)%len(fields)]
+				m.histSortAsc = naturalAsc[m.histSortField]
+				m.histCursor, m.histOffset = 0, 0
+				break
+			}
+		}
+	case "S":
+		m.histSortAsc = !m.histSortAsc
+		m.histCursor, m.histOffset = 0, 0
 	case "o":
 		if len(filtered) > 0 {
 			if url := filtered[m.histCursor].URL; url != "" {
@@ -1981,12 +2000,36 @@ func (m model) handleShowTicketsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) histFiltered() []TicketRecord {
+	// Sort a copy of the full list.
+	sorted := make([]TicketRecord, len(m.histRecords))
+	copy(sorted, m.histRecords)
+	asc := m.histSortAsc
+	sort.SliceStable(sorted, func(i, j int) bool {
+		a, b := sorted[i], sorted[j]
+		var less bool
+		switch m.histSortField {
+		case "key":
+			less = a.JiraKey < b.JiraKey
+		case "title":
+			less = strings.ToLower(a.Title) < strings.ToLower(b.Title)
+		case "type":
+			less = strings.ToLower(a.TicketType) < strings.ToLower(b.TicketType)
+		default: // "date"
+			less = a.CreatedAt.Before(b.CreatedAt)
+		}
+		if asc {
+			return less
+		}
+		return !less
+	})
+
+	// Filter.
 	q := strings.ToLower(strings.TrimSpace(m.histSearch.Value()))
 	if q == "" {
-		return m.histRecords
+		return sorted
 	}
 	var out []TicketRecord
-	for _, r := range m.histRecords {
+	for _, r := range sorted {
 		if strings.Contains(strings.ToLower(r.Title), q) ||
 			strings.Contains(strings.ToLower(r.JiraKey), q) ||
 			strings.Contains(strings.ToLower(r.TicketType), q) ||
@@ -2834,16 +2877,22 @@ func (m model) viewShowTickets() string {
 		end = len(filtered)
 	}
 
+	sortArrow := "↓"
+	if m.histSortAsc {
+		sortArrow = "↑"
+	}
+	sortNames := map[string]string{"date": "Date", "key": "Key", "title": "Title", "type": "Type"}
+	sortLabel := sortNames[m.histSortField] + sortArrow
+
 	var pageInfo string
-	if m.histSearch.Value() != "" {
+	if len(filtered) == 0 {
+		pageInfo = subtitleStyle.Render(fmt.Sprintf("No matches  •  %s", sortLabel))
+	} else if m.histSearch.Value() != "" {
 		pageInfo = subtitleStyle.Render(fmt.Sprintf(
-			"%d – %d  of  %d matches  (%d total)", m.histOffset+1, end, len(filtered), len(m.histRecords)))
+			"%d – %d  of  %d matches  (%d total)  •  %s", m.histOffset+1, end, len(filtered), len(m.histRecords), sortLabel))
 	} else {
 		pageInfo = subtitleStyle.Render(fmt.Sprintf(
-			"%d – %d  of  %d tickets", m.histOffset+1, end, len(filtered)))
-	}
-	if len(filtered) == 0 {
-		pageInfo = subtitleStyle.Render("No matches")
+			"%d – %d  of  %d tickets  •  %s", m.histOffset+1, end, len(filtered), sortLabel))
 	}
 
 	var rows []string
@@ -2908,7 +2957,7 @@ func (m model) viewShowTickets() string {
 	} else if m.histSearch.Focused() {
 		footerText = "Type to filter  •  Enter to browse results  •  Esc clear / quit"
 	} else {
-		footerText = "↑↓/jk navigate  •  / filter  •  o open URL  •  d local  •  D delete from Jira  •  q / Esc to quit"
+		footerText = "↑↓/jk navigate  •  / filter  •  s sort  •  S reverse  •  o open URL  •  d local  •  D Jira delete  •  q / Esc quit"
 	}
 	parts = append(parts, footerStyle.Width(w).Render(footerText))
 
