@@ -2656,7 +2656,10 @@ func (m model) viewShowTickets() string {
 		return m.viewSpinner("Loading ticket history…")
 	}
 
-	w := clamp(m.width-8, 72, 110)
+	w := m.width - 4
+	if w < 72 {
+		w = 72
+	}
 	title := titleStyle.Render("Ticket History")
 
 	if len(m.histRecords) == 0 {
@@ -2694,11 +2697,22 @@ func (m model) viewShowTickets() string {
 		date := dimStyle.Render(r.CreatedAt.Format("2006-01-02"))
 
 		parent := ""
+		parentVisual := 0
 		if r.ParentKey != "" {
 			parent = dimStyle.Render("↳ "+r.ParentKey) + "  "
+			parentVisual = 2 + len([]rune(r.ParentKey)) + 2 // "↳ " + key + "  "
 		}
 
-		maxTitle := w - 42
+		// Inner content width = panel width minus border (1 each side) and
+		// padding (2 each side from Padding(1,2)) = w - 6.
+		// Fixed visual columns used by non-title parts of the row:
+		//   cur(2) + date(10) + sep(2) + key + sep(2) + type(≤8) + sep(2) + parent
+		typeVisual := len([]rune(truncate(r.TicketType, 8)))
+		fixedUsed := 2 + 10 + 2 + len([]rune(r.JiraKey)) + 2 + typeVisual + 2 + parentVisual
+		maxTitle := (w - 6) - fixedUsed
+		if maxTitle < 10 {
+			maxTitle = 10
+		}
 		row := cur + date + "  " + keyTag + "  " + typeTag + "  " + parent + nameStyle.Render(truncate(r.Title, maxTitle))
 		rows = append(rows, row)
 	}
