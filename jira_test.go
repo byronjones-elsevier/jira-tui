@@ -283,3 +283,115 @@ func TestGetBoards_Pagination(t *testing.T) {
 	assert.Len(t, boards, 2)
 	assert.Equal(t, 2, callCount, "should have fetched both pages")
 }
+
+// ── GetIssue ──────────────────────────────────────────────────────────────────
+
+func TestGetIssue_ReturnsIssue(t *testing.T) {
+	resp := `{
+		"key": "PROJ-123",
+		"fields": {
+			"summary": "My Epic",
+			"description": "An epic description",
+			"issuetype": {"name": "Epic"},
+			"status": {"name": "In Progress"},
+			"assignee": {"accountId": "acc1", "displayName": "Alice", "emailAddress": "alice@example.com"},
+			"reporter": {"accountId": "acc2", "displayName": "Bob", "emailAddress": "bob@example.com"},
+			"labels": ["finops", "budget"]
+		}
+	}`
+	srv, _ := captureServer(t, 200, resp)
+	client := newJiraClient(srv.URL, "user@example.com", "token")
+
+	issue, err := client.GetIssue("PROJ-123")
+	require.NoError(t, err)
+	assert.Equal(t, "PROJ-123", issue.Key)
+	assert.Equal(t, "My Epic", issue.Fields.Summary)
+	assert.Equal(t, "Epic", issue.Fields.IssueType.Name)
+	assert.Equal(t, "alice@example.com", issue.Fields.Assignee.EmailAddress)
+	assert.Equal(t, "bob@example.com", issue.Fields.Reporter.EmailAddress)
+	assert.Equal(t, []string{"finops", "budget"}, issue.Fields.Labels)
+}
+
+func TestGetIssue_HTTPError(t *testing.T) {
+	srv, _ := captureServer(t, 404, `{"errorMessages":["Issue does not exist"]}`)
+	client := newJiraClient(srv.URL, "user@example.com", "token")
+
+	_, err := client.GetIssue("PROJ-999")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "HTTP 404")
+}
+
+// ── GetEpicChildren ───────────────────────────────────────────────────────────
+
+func TestGetEpicChildren_ReturnsChildren(t *testing.T) {
+	resp := `{
+		"total": 2,
+		"issues": [
+			{"key":"PROJ-2","fields":{"summary":"Child 1","issuetype":{"name":"Task"},"labels":["a"]}},
+			{"key":"PROJ-3","fields":{"summary":"Child 2","issuetype":{"name":"Story"},"labels":[]}}
+		]
+	}`
+	srv, _ := captureServer(t, 200, resp)
+	client := newJiraClient(srv.URL, "user@example.com", "token")
+
+	children, err := client.GetEpicChildren("PROJ-1")
+	require.NoError(t, err)
+	require.Len(t, children, 2)
+	assert.Equal(t, "PROJ-2", children[0].Key)
+	assert.Equal(t, "Child 1", children[0].Fields.Summary)
+}
+
+func TestGetEpicChildren_FallbackToEpicLink(t *testing.T) {
+	// parent= returns 0, Epic Link returns 1 result
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.Header().Set("Content-Type", "application/json")
+		q := r.URL.Query().Get("jql")
+		if strings.Contains(q, "parent") {
+			fmt.Fprint(w, `{"total":0,"issues":[]}`)
+		} else {
+			fmt.Fprint(w, `{"total":1,"issues":[{"key":"PROJ-5","fields":{"summary":"Classic Child","issuetype":{"name":"Task"},"labels":[]}}]}`)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	client := newJiraClient(srv.URL, "user@example.com", "token")
+	children, err := client.GetEpicChildren("PROJ-1")
+	require.NoError(t, err)
+	require.Len(t, children, 1)
+	assert.Equal(t, "PROJ-5", children[0].Key)
+	assert.Equal(t, 2, callCount, "should have tried both JQL approaches")
+}
+
+// ── IssueDescription ─────────────────────────────────────────────────────────
+
+func TestIssueDescription_PlainString(t *testing.T) {
+	raw := json.RawMessage(`"This is a plain text description"`)
+	assert.Equal(t, "This is a plain text description", IssueDescription(raw))
+}
+
+func TestIssueDescription_Null(t *testing.T) {
+	assert.Equal(t, "", IssueDescription(json.RawMessage(`null`)))
+	assert.Equal(t, "", IssueDescription(nil))
+}
+
+func TestIssueDescription_ADFDocument(t *testing.T) {
+	adf := json.RawMessage(`{
+		"version": 1,
+		"type": "doc",
+		"content": [
+			{
+				"type": "paragraph",
+				"content": [
+					{"type": "text", "text": "Hello"},
+					{"type": "hardBreak"},
+					{"type": "text", "text": "World"}
+				]
+			}
+		]
+	}`)
+	desc := IssueDescription(adf)
+	assert.Contains(t, desc, "Hello")
+	assert.Contains(t, desc, "World")
+}

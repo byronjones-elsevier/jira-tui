@@ -6,9 +6,9 @@ Architecture and implementation notes for `jira-tui`.
 
 | File | Purpose |
 |------|---------|
-| `main.go` | Entry point; parses flags (`-ce`, `-ct`, `-st`, `-pk`, `-h`), first-run check, opens DB, launches bubbletea |
+| `main.go` | Entry point; parses flags (`-ce`, `-ct`, `-st`, `-ccfe`, `-pk`, `-h`), first-run check, opens DB, launches bubbletea |
 | `model.go` | Entire TUI — screen state machine, `Update`, `View`, key handlers |
-| `jira.go` | Jira REST API client (auth, boards, user lookup, `CreateIssue`, `CreateEpic`, `toADFJSON`) |
+| `jira.go` | Jira REST API client (auth, boards, user lookup, `CreateIssue`, `CreateEpic`, `GetIssue`, `GetEpicChildren`, `searchIssues`, `IssueDescription`, `toADFJSON`) |
 | `db.go` | SQLite history DB — `openDB`, `insertTicket`, `findDuplicates`, `allTickets`, `isFirstRun` |
 | `config.go` | Config struct, `loadConfig`, `saveConfig` — `~/.jira-tui/config` |
 | `cache.go` | Board list cache — `~/.jira-tui/boards_cache.json` (load/save/formatAge) |
@@ -20,7 +20,7 @@ Architecture and implementation notes for `jira-tui`.
 
 ## Modes
 
-The program has four modes, selected at launch via flags:
+The program has five modes, selected at launch via flags:
 
 | Flag | Mode | Behaviour |
 |------|------|-----------|
@@ -28,6 +28,7 @@ The program has four modes, selected at launch via flags:
 | `--create-epic` / `-ce` | `modeEpic` | Same flow but inserts Epic Setup screen; tickets become children of the created epic |
 | `--show-tickets` / `-st` | `modeShow` | Skips Jira auth entirely; loads local history from SQLite and displays it |
 | `--create-ticket` / `-ct` | `modeManual` | Auth → board → manual form (title/desc/assignee/labels/type) → create; if Epic, loops to offer subtask creation |
+| `--create-csv-from-epic <KEY>` / `-ccfe <KEY>` | `modeEpicToCSV` | Auth → query epic by key → review children → choose save path → write CSV |
 
 ## Screen state machine
 
@@ -49,6 +50,13 @@ modeManual:
     → screenManualEntry (form: title/desc/assignee/labels/issuetype)
     → [screenManualContinue if Epic created] → screenManualEntry (subtask loop)
     → screenDone
+
+modeEpicToCSV:
+  screenAuth → screenVerify
+    → screenEpicCSVQuery (spinner, then error state on failure)
+    → screenEpicCSVReview (scrollable child list, Enter to proceed)
+    → screenEpicCSVPath (file-path textinput, Enter to write CSV)
+    → success state on screenEpicCSVPath → quit
 ```
 
 - `[screenDupCheck]` and `[screenEpicDupWarn]` are only shown when duplicates are found in the local DB.
@@ -60,13 +68,14 @@ modeManual:
 
 | Message | Trigger | Handler action |
 |---------|---------|----------------|
-| `authVerifiedMsg` | After `VerifyAuth()` | Save config; check cache → show boards or spinner |
+| `authVerifiedMsg` | After `VerifyAuth()` | Save config; modeEpicToCSV → epic query; else check cache → show boards or spinner |
 | `boardsLoadedMsg` | After `GetBoards()` (cold start) | Save cache; show board picker |
 | `boardsSyncedMsg` | After `GetBoards()` (background) | Update list; save cache; clear syncing flag |
 | `epicCreatedMsg` | After `CreateEpic()` | Save epic to DB; start first child ticket |
 | `ticketCreatedMsg` | After `CreateIssue()` | Save to DB; chain next ticket or go to Done |
 | `manualTicketCreatedMsg` | After `cmdCreateManualTicket()` | Save to DB; if Epic → screenManualContinue; else → screenDone |
 | `historyLoadedMsg` | After `allTickets()` | Populate history list |
+| `epicQueryMsg` | After `GetIssue` + `GetEpicChildren` | On error: stay on screenEpicCSVQuery with error displayed; on success: → screenEpicCSVReview |
 | `spinner.TickMsg` | Bubbletea ticker | Advance spinner animation |
 
 ## SQLite history DB
@@ -160,8 +169,25 @@ Legacy locations (`~/.jira_config`, `~/.jira_boards_cache.json`) are read as a f
 | Resolve assignee | `GET /rest/api/3/user/search?query=<email>` — exact match on emailAddress or displayName |
 | Create issue | `POST /rest/api/2/issue` (v2) or `POST /rest/api/3/issue` (v3 when `JIRA_USE_ADF=true`) |
 | Create epic | Same endpoint switching as above; tries `customfield_10011` (Epic Name), retries without on error |
+| Fetch single issue | `GET /rest/api/2/issue/{key}?fields=summary,description,assignee,reporter,labels,issuetype,status` |
+| Search issues (JQL) | `GET /rest/api/2/search?jql=<jql>&fields=<fields>&maxResults=50&startAt=N` — paginated; used by `GetEpicChildren` |
 
 All calls use HTTP Basic auth (`email:apiToken`).
+
+### Epic child-issue discovery
+
+`GetEpicChildren` runs two JQL queries in sequence:
+
+1. `parent = "EPIC-KEY"` — works for team-managed (Next-gen) Jira Cloud projects and modern classic projects.
+2. `"Epic Link" = "EPIC-KEY"` — fallback for older classic Jira Cloud configurations where children reference the epic via a custom field rather than a parent link. Only attempted if the first query returns 0 results.
+
+### Description field handling (`IssueDescription`)
+
+Jira REST v2 returns `description` as a plain string in classic projects and as an ADF (Atlassian Document Format) JSON object in Next-gen projects. `IssueDescription(raw json.RawMessage)` handles all three states:
+
+1. `null` JSON → empty string
+2. JSON string literal → returned as-is
+3. JSON object → `extractADFPlainText` walks the ADF node tree recursively, extracting `text` leaf values and inserting newlines at `paragraph` / `hardBreak` boundaries
 
 ## Key design decisions
 

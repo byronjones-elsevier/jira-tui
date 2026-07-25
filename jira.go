@@ -10,6 +10,34 @@ import (
 	"time"
 )
 
+// JiraUser represents a Jira user embedded in issue fields.
+type JiraUser struct {
+	AccountID    string `json:"accountId"`
+	DisplayName  string `json:"displayName"`
+	EmailAddress string `json:"emailAddress"`
+}
+
+// JiraIssueFields holds the fields returned for a Jira issue.
+type JiraIssueFields struct {
+	Summary     string          `json:"summary"`
+	Description json.RawMessage `json:"description"` // string (v2) or ADF object (v3)
+	Assignee    *JiraUser       `json:"assignee"`
+	Reporter    *JiraUser       `json:"reporter"`
+	Labels      []string        `json:"labels"`
+	IssueType   struct {
+		Name string `json:"name"`
+	} `json:"issuetype"`
+	Status struct {
+		Name string `json:"name"`
+	} `json:"status"`
+}
+
+// JiraIssue represents a Jira issue as returned by the REST API.
+type JiraIssue struct {
+	Key    string          `json:"key"`
+	Fields JiraIssueFields `json:"fields"`
+}
+
 // JiraClient wraps Jira's REST API with basic-auth credentials.
 type JiraClient struct {
 	baseURL string
@@ -357,4 +385,117 @@ func (c *JiraClient) CreateEpic(projectKey, title, desc, requester string) (stri
 		Key string `json:"key"`
 	}
 	return result.Key, json.Unmarshal(data, &result)
+}
+
+// GetIssue fetches a single Jira issue by key using the REST v2 API.
+func (c *JiraClient) GetIssue(key string) (*JiraIssue, error) {
+	path := "/rest/api/2/issue/" + url.PathEscape(key) +
+		"?fields=summary,description,assignee,reporter,labels,issuetype,status"
+	data, err := c.get(path)
+	if err != nil {
+		return nil, err
+	}
+	var issue JiraIssue
+	return &issue, json.Unmarshal(data, &issue)
+}
+
+// GetEpicChildren fetches all child issues of an epic.
+// It first tries the modern JQL (parent=) used by team-managed projects, then
+// falls back to the classic "Epic Link" field for older project configurations.
+func (c *JiraClient) GetEpicChildren(epicKey string) ([]JiraIssue, error) {
+	fields := "summary,description,assignee,reporter,labels,issuetype,status"
+
+	issues, err := c.searchIssues(fmt.Sprintf(`parent = "%s"`, epicKey), fields)
+	if err != nil {
+		return nil, err
+	}
+	if len(issues) == 0 {
+		// Fallback: classic projects store the relationship in "Epic Link".
+		classic, err2 := c.searchIssues(fmt.Sprintf(`"Epic Link" = "%s"`, epicKey), fields)
+		if err2 == nil {
+			issues = classic
+		}
+	}
+	return issues, nil
+}
+
+// searchIssues runs a paginated JQL search and returns all matching issues.
+func (c *JiraClient) searchIssues(jql, fields string) ([]JiraIssue, error) {
+	type searchResult struct {
+		Total  int         `json:"total"`
+		Issues []JiraIssue `json:"issues"`
+	}
+
+	const pageSize = 50
+	const maxPages = 20
+	var all []JiraIssue
+	startAt := 0
+
+	for page := 0; page < maxPages; page++ {
+		path := fmt.Sprintf("/rest/api/2/search?jql=%s&fields=%s&maxResults=%d&startAt=%d",
+			url.QueryEscape(jql), url.QueryEscape(fields), pageSize, startAt)
+		data, err := c.get(path)
+		if err != nil {
+			return nil, err
+		}
+		var result searchResult
+		if err := json.Unmarshal(data, &result); err != nil {
+			return nil, err
+		}
+		all = append(all, result.Issues...)
+		if len(all) >= result.Total || len(result.Issues) == 0 {
+			break
+		}
+		startAt += len(result.Issues)
+	}
+
+	return all, nil
+}
+
+// IssueDescription extracts a plain-text description from a raw Jira description
+// field, which may be a JSON string (REST v2 classic), an ADF document object
+// (REST v2 next-gen / v3), or null.
+func IssueDescription(raw json.RawMessage) string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	var doc map[string]interface{}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(extractADFPlainText(doc))
+}
+
+// extractADFPlainText recursively extracts plain text from an ADF node tree.
+func extractADFPlainText(node map[string]interface{}) string {
+	var sb strings.Builder
+	nodeType, _ := node["type"].(string)
+
+	if nodeType == "text" {
+		text, _ := node["text"].(string)
+		return text
+	}
+	if nodeType == "hardBreak" {
+		return "\n"
+	}
+
+	if content, ok := node["content"].([]interface{}); ok {
+		for _, child := range content {
+			if childMap, ok := child.(map[string]interface{}); ok {
+				sb.WriteString(extractADFPlainText(childMap))
+			}
+		}
+	}
+
+	switch nodeType {
+	case "paragraph", "heading", "bulletList", "orderedList",
+		"listItem", "codeBlock", "blockquote":
+		sb.WriteString("\n")
+	}
+
+	return sb.String()
 }

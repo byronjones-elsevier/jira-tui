@@ -22,20 +22,23 @@ import (
 type screen int
 
 const (
-	screenAuth          screen = iota // credential entry
-	screenVerify                      // verifying creds (spinner)
-	screenBoards                      // board list / manual key entry
-	screenSettings                    // assignee fallback + issue type
-	screenTickets                     // ticket list + preview
-	screenCreating                    // creation progress
-	screenDone                        // results summary
-	screenEpicSetup                   // enter epic title / desc / requester
-	screenEpicDupWarn                 // confirm when a matching epic already exists
-	screenDupCheck                    // per-ticket duplicate decision
-	screenShowTickets                 // browse local history
-	screenManualEntry                 // interactive single-ticket form (modeManual)
-	screenManualContinue              // "add subtask or finish?" prompt after epic creation
-	screenFirstRun                    // first-launch welcome / data-dir creation prompt
+	screenAuth           screen = iota // credential entry
+	screenVerify                       // verifying creds (spinner)
+	screenBoards                       // board list / manual key entry
+	screenSettings                     // assignee fallback + issue type
+	screenTickets                      // ticket list + preview
+	screenCreating                     // creation progress
+	screenDone                         // results summary
+	screenEpicSetup                    // enter epic title / desc / requester
+	screenEpicDupWarn                  // confirm when a matching epic already exists
+	screenDupCheck                     // per-ticket duplicate decision
+	screenShowTickets                  // browse local history
+	screenManualEntry                  // interactive single-ticket form (modeManual)
+	screenManualContinue               // "add subtask or finish?" prompt after epic creation
+	screenFirstRun                     // first-launch welcome / data-dir creation prompt
+	screenEpicCSVQuery                 // loading spinner while querying epic + children
+	screenEpicCSVReview                // scrollable preview of epic children, confirm before save
+	screenEpicCSVPath                  // file-path input and save confirmation
 )
 
 // ── Messages ─────────────────────────────────────────────────────────────────
@@ -80,6 +83,12 @@ type manualTicketCreatedMsg struct {
 	issueType    string
 	err          error
 	assigneeWarn string
+}
+
+type epicQueryMsg struct {
+	issue    *JiraIssue
+	children []JiraIssue
+	err      error
 }
 
 // ── dupCheckItem holds a ticket whose title+description matches a history record. ─
@@ -184,6 +193,17 @@ type model struct {
 	loadingMsg string
 	err        error
 	firstRun   bool // true on first launch before data dir is created
+
+	// Epic → CSV export (modeEpicToCSV)
+	epicCSVKey      string          // the ticket key supplied on the command line
+	epicCSVIssue    *JiraIssue      // fetched epic issue
+	epicCSVChildren []JiraIssue     // child issues of the epic
+	epicCSVCursor   int             // review-screen list cursor
+	epicCSVOffset   int             // review-screen scroll offset
+	epicCSVPathInp  textinput.Model // file-path text input on save screen
+	epicCSVSaved    bool            // true after a successful CSV write
+	epicCSVSavePath string          // path used for the last successful write
+	epicCSVSaveErr  error           // last save error (nil when none)
 }
 
 // ── Constructor ───────────────────────────────────────────────────────────────
@@ -243,6 +263,10 @@ func newModel(cfg Config, tickets []Ticket, db *sql.DB, mode appMode, firstRun b
 	manualDesc.SetHeight(5)
 	manualDesc.CharLimit = 4096
 
+	epicCSVInp := textinput.New()
+	epicCSVInp.Placeholder = "e.g. PROJ-123.csv"
+	epicCSVInp.CharLimit = 256
+
 	s := spinner.New()
 	s.Spinner = spinner.Dot
 	s.Style = lipgloss.NewStyle().Foreground(purple)
@@ -273,6 +297,7 @@ func newModel(cfg Config, tickets []Ticket, db *sql.DB, mode appMode, firstRun b
 		epicDescTA:       epicDesc,
 		manualInputs:     manualInps,
 		manualDesc:       manualDesc,
+		epicCSVPathInp:   epicCSVInp,
 		spinner:          s,
 		selectedTickets:  selected,
 		assigneeFallback: af,
@@ -424,6 +449,26 @@ func (m model) cmdLoadHistory() tea.Cmd {
 	}
 }
 
+func (m model) cmdQueryEpic() tea.Cmd {
+	client := m.client
+	key := m.epicCSVKey
+	return func() tea.Msg {
+		issue, err := client.GetIssue(key)
+		if err != nil {
+			return epicQueryMsg{err: fmt.Errorf("fetching %s: %w", key, err)}
+		}
+		if !strings.EqualFold(issue.Fields.IssueType.Name, "Epic") {
+			return epicQueryMsg{err: fmt.Errorf(
+				"%s is not an Epic (issue type: %s)", key, issue.Fields.IssueType.Name)}
+		}
+		children, err := client.GetEpicChildren(key)
+		if err != nil {
+			return epicQueryMsg{err: fmt.Errorf("fetching children of %s: %w", key, err)}
+		}
+		return epicQueryMsg{issue: issue, children: children}
+	}
+}
+
 // ── Update ────────────────────────────────────────────────────────────────────
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -457,6 +502,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.config.Email = m.client.email
 		m.config.APIToken = m.client.token
 		_ = saveConfig(m.config)
+
+		// modeEpicToCSV: skip board picker, go straight to epic query.
+		if m.mode == modeEpicToCSV {
+			m.screen = screenEpicCSVQuery
+			m.loading = true
+			m.loadingMsg = fmt.Sprintf("Querying epic %s…", m.epicCSVKey)
+			return m, m.cmdQueryEpic()
+		}
 
 		// --project-key supplied: skip board picker entirely.
 		if m.projectKey != "" {
@@ -636,6 +689,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m.manualDone()
+
+	case epicQueryMsg:
+		m.loading = false
+		if msg.err != nil {
+			m.err = msg.err
+			// Stay on screenEpicCSVQuery to display the error.
+			return m, nil
+		}
+		m.epicCSVIssue = msg.issue
+		m.epicCSVChildren = msg.children
+		m.epicCSVCursor = 0
+		m.epicCSVOffset = 0
+		m.screen = screenEpicCSVReview
+		return m, nil
 	}
 
 	return m, nil
@@ -671,6 +738,12 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleShowTicketsKey(msg)
 	case screenDone:
 		return m.handleDoneKey(msg)
+	case screenEpicCSVQuery:
+		return m.handleEpicCSVQueryKey(msg)
+	case screenEpicCSVReview:
+		return m.handleEpicCSVReviewKey(msg)
+	case screenEpicCSVPath:
+		return m.handleEpicCSVPathKey(msg)
 	}
 	return m, nil
 }
@@ -683,6 +756,102 @@ func (m model) handleCreatingKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.creationAborted = true
 	}
 	return m, nil
+}
+
+// ── Epic CSV keys ─────────────────────────────────────────────────────────────
+
+// handleEpicCSVQueryKey handles keys on the query/loading screen.
+// Only reachable when not loading (i.e. an error occurred).
+func (m model) handleEpicCSVQueryKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "q", "esc", "enter":
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+func (m model) handleEpicCSVReviewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	ps := m.epicCSVPageSize()
+	n := len(m.epicCSVChildren)
+	switch msg.String() {
+	case "up", "k":
+		if m.epicCSVCursor > 0 {
+			m.epicCSVCursor--
+			if m.epicCSVCursor < m.epicCSVOffset {
+				m.epicCSVOffset = m.epicCSVCursor
+			}
+		}
+	case "down", "j":
+		if m.epicCSVCursor < n-1 {
+			m.epicCSVCursor++
+			if m.epicCSVCursor >= m.epicCSVOffset+ps {
+				m.epicCSVOffset = m.epicCSVCursor - ps + 1
+			}
+		}
+	case "pgup", "ctrl+b":
+		m.epicCSVCursor -= ps
+		if m.epicCSVCursor < 0 {
+			m.epicCSVCursor = 0
+		}
+		m.epicCSVOffset -= ps
+		if m.epicCSVOffset < 0 {
+			m.epicCSVOffset = 0
+		}
+	case "pgdown", "ctrl+f":
+		m.epicCSVCursor += ps
+		if m.epicCSVCursor >= n {
+			m.epicCSVCursor = maxInt(0, n-1)
+		}
+		m.epicCSVOffset += ps
+		maxOff := maxInt(0, n-ps)
+		if m.epicCSVOffset > maxOff {
+			m.epicCSVOffset = maxOff
+		}
+	case "enter":
+		defaultPath := m.epicCSVKey + ".csv"
+		m.epicCSVPathInp.SetValue(defaultPath)
+		m.epicCSVSaved = false
+		m.epicCSVSaveErr = nil
+		m.screen = screenEpicCSVPath
+		return m, m.epicCSVPathInp.Focus()
+	case "q", "esc":
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+func (m model) handleEpicCSVPathKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.epicCSVSaved {
+		switch msg.String() {
+		case "q", "esc", "enter":
+			return m, tea.Quit
+		}
+		return m, nil
+	}
+
+	switch msg.String() {
+	case "enter":
+		path := strings.TrimSpace(m.epicCSVPathInp.Value())
+		if path == "" {
+			path = m.epicCSVKey + ".csv"
+		}
+		if err := m.writeEpicChildrenCSV(path); err != nil {
+			m.epicCSVSaveErr = err
+			return m, nil
+		}
+		m.epicCSVSaved = true
+		m.epicCSVSavePath = path
+		m.epicCSVSaveErr = nil
+		return m, nil
+	case "esc":
+		m.epicCSVSaveErr = nil
+		m.screen = screenEpicCSVReview
+		return m, nil
+	default:
+		var cmd tea.Cmd
+		m.epicCSVPathInp, cmd = m.epicCSVPathInp.Update(msg)
+		return m, cmd
+	}
 }
 
 // ── Manual entry helpers ───────────────────────────────────────────────────────
@@ -1668,6 +1837,15 @@ func (m model) View() string {
 		return m.viewManualContinue()
 	case screenFirstRun:
 		return m.viewFirstRun()
+	case screenEpicCSVQuery:
+		if m.loading {
+			return m.viewSpinner(m.loadingMsg)
+		}
+		return m.viewEpicCSVQuery()
+	case screenEpicCSVReview:
+		return m.viewEpicCSVReview()
+	case screenEpicCSVPath:
+		return m.viewEpicCSVPath()
 	}
 	return ""
 }
@@ -2504,6 +2682,190 @@ func (m model) exportResultsCSV() error {
 			_ = w.Write([]string{"failed", "", r.Ticket.Title, "", r.Err.Error()})
 		}
 	}
+	w.Flush()
+	return w.Error()
+}
+
+// ── Epic CSV views ────────────────────────────────────────────────────────────
+
+// viewEpicCSVQuery is shown when m.loading=false (error state after query).
+func (m model) viewEpicCSVQuery() string {
+	w := clamp(m.width-8, 52, 76)
+	errLine := ""
+	if m.err != nil {
+		errLine = errorStyle.Render("⚠  " + m.err.Error())
+	}
+	body := lipgloss.JoinVertical(lipgloss.Left,
+		titleStyle.Render("Epic Query Failed"),
+		"",
+		errLine,
+		"",
+		footerStyle.Width(w).Render("q / Esc / Enter to quit"),
+	)
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center,
+		panelStyle.Width(w).Render(body))
+}
+
+func (m model) viewEpicCSVReview() string {
+	w := clamp(m.width-8, 72, 108)
+	issue := m.epicCSVIssue
+
+	epicHeader := keyStyle.Render(issue.Key) + "  " +
+		labelStyle.Render("EPIC") + "  " +
+		titleStyle.Render(truncate(issue.Fields.Summary, w-30))
+
+	childCount := len(m.epicCSVChildren)
+	countLine := subtitleStyle.Render(fmt.Sprintf("%d child issue(s) found", childCount))
+
+	ps := m.epicCSVPageSize()
+	offset := m.epicCSVOffset
+	end := offset + ps
+	if end > childCount {
+		end = childCount
+	}
+
+	var rows []string
+	for i := offset; i < end; i++ {
+		child := m.epicCSVChildren[i]
+		cur := "  "
+		nameStyle := lipgloss.NewStyle()
+		if i == m.epicCSVCursor {
+			cur = cursorStyle.Render("▶ ")
+			nameStyle = selectedItemStyle
+		}
+		assigneePart := ""
+		if child.Fields.Assignee != nil {
+			name := child.Fields.Assignee.EmailAddress
+			if name == "" {
+				name = child.Fields.Assignee.DisplayName
+			}
+			assigneePart = "  " + dimStyle.Render(name)
+		}
+		typeTag := dimStyle.Render("[" + child.Fields.IssueType.Name + "]")
+		rows = append(rows, cur+typeTag+"  "+nameStyle.Render(truncate(child.Fields.Summary, w-32))+assigneePart)
+	}
+
+	var scrollHint string
+	if offset > 0 && end < childCount {
+		scrollHint = dimStyle.Render("  ↑ more above  ·  ↓ more below")
+	} else if offset > 0 {
+		scrollHint = dimStyle.Render("  ↑ more above")
+	} else if end < childCount {
+		scrollHint = dimStyle.Render("  ↓ more below")
+	}
+
+	defaultPath := m.epicCSVKey + ".csv"
+	footer := footerStyle.Width(w).Render(fmt.Sprintf(
+		"↑↓/jk navigate  •  PgUp/PgDn jump  •  Enter save as %q  •  q / Esc quit", defaultPath))
+
+	parts := []string{epicHeader, "", countLine}
+	if childCount == 0 {
+		parts = append(parts, "", dimStyle.Render("No child issues were found for this epic."),
+			dimStyle.Render("Team-managed projects use parent= JQL; classic projects use the Epic Link field."))
+	} else {
+		parts = append(parts, "", strings.Join(rows, "\n"))
+	}
+	if scrollHint != "" {
+		parts = append(parts, scrollHint)
+	}
+	parts = append(parts, footer)
+
+	body := lipgloss.JoinVertical(lipgloss.Left, parts...)
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Top,
+		panelStyle.Width(w).Render(body))
+}
+
+func (m model) viewEpicCSVPath() string {
+	w := clamp(m.width-8, 60, 84)
+
+	if m.epicCSVSaved {
+		body := lipgloss.JoinVertical(lipgloss.Left,
+			titleStyle.Render("CSV Saved"),
+			"",
+			successStyle.Render("✓ "+m.epicCSVSavePath),
+			"",
+			subtitleStyle.Render(fmt.Sprintf("%d child issues exported", len(m.epicCSVChildren))),
+			dimStyle.Render("Columns: Title, Description, Assignee, Labels, Requester"),
+			"",
+			footerStyle.Width(w).Render("Enter / q / Esc to exit"),
+		)
+		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center,
+			panelStyle.Width(w).Render(body))
+	}
+
+	errLine := ""
+	if m.epicCSVSaveErr != nil {
+		errLine = "\n" + errorStyle.Render("⚠  "+m.epicCSVSaveErr.Error())
+	}
+
+	body := lipgloss.JoinVertical(lipgloss.Left,
+		titleStyle.Render("Save CSV"),
+		subtitleStyle.Render(fmt.Sprintf(
+			"Export %d child issues from %s", len(m.epicCSVChildren), m.epicCSVKey)),
+		"",
+		subtitleStyle.Render("File path"),
+		focusedInputStyle.Width(w-8).Render(m.epicCSVPathInp.View()),
+		errLine,
+		"",
+		footerStyle.Width(w).Render("Enter to save  •  Esc back to review  •  Ctrl+C quit"),
+	)
+
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center,
+		panelStyle.Width(w).Render(body))
+}
+
+// epicCSVPageSize returns the number of child-issue rows visible on the review screen.
+func (m model) epicCSVPageSize() int {
+	n := m.height - 14
+	if n < 4 {
+		n = 4
+	}
+	if n > 30 {
+		n = 30
+	}
+	return n
+}
+
+// writeEpicChildrenCSV writes the epic's child issues to path in the standard
+// jira-tui CSV format (Title, Description, Assignee, Labels, Requester).
+// The first four columns are compatible with the input CSV format.
+func (m model) writeEpicChildrenCSV(path string) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	w := csv.NewWriter(f)
+	if err := w.Write([]string{"Title", "Description", "Assignee", "Labels", "Requester"}); err != nil {
+		return err
+	}
+
+	for _, child := range m.epicCSVChildren {
+		assignee := ""
+		if child.Fields.Assignee != nil {
+			if child.Fields.Assignee.EmailAddress != "" {
+				assignee = child.Fields.Assignee.EmailAddress
+			} else {
+				assignee = child.Fields.Assignee.DisplayName
+			}
+		}
+		requester := ""
+		if child.Fields.Reporter != nil {
+			if child.Fields.Reporter.EmailAddress != "" {
+				requester = child.Fields.Reporter.EmailAddress
+			} else {
+				requester = child.Fields.Reporter.DisplayName
+			}
+		}
+		labels := strings.Join(child.Fields.Labels, ";")
+		desc := IssueDescription(child.Fields.Description)
+
+		if err := w.Write([]string{child.Fields.Summary, desc, assignee, labels, requester}); err != nil {
+			return err
+		}
+	}
+
 	w.Flush()
 	return w.Error()
 }

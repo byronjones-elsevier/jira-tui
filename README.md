@@ -17,6 +17,7 @@ An interactive terminal UI for creating Jira tickets.
 - **Interactive ticket entry** — fill in a form for a single ticket with no CSV needed
 - **Epic mode** — create an epic then link all CSV rows as child tickets
 - **Epic + subtask loop** — create an epic interactively, then add as many subtasks as you like
+- **Epic → CSV export** — query an existing epic and export its child issues to a reusable CSV file
 - **Duplicate detection** — checks local history before creating; prompts to skip or create anyway
 - **Retry failed tickets** — re-create only the tickets that errored, without restarting
 - **Ticket history** — every created ticket is stored in a local SQLite DB; browse with `--show-tickets`
@@ -33,14 +34,15 @@ An interactive terminal UI for creating Jira tickets.
 ## Quick start
 
 ```bash
-make build                             # or: go build -o jira-tui .
-./jira-tui                             # create tickets from jira_tickets.csv
-./jira-tui my-tickets.csv              # specify a CSV file
-./jira-tui --create-epic tickets.csv   # create an epic + child tickets
-./jira-tui --create-ticket             # interactively enter a single ticket
-./jira-tui --show-tickets              # browse previously created tickets
-./jira-tui --project-key MYPROJ        # skip board picker
-./jira-tui --help                      # show all options and env vars
+make build                                      # or: go build -o jira-tui .
+./jira-tui                                      # create tickets from jira_tickets.csv
+./jira-tui my-tickets.csv                       # specify a CSV file
+./jira-tui --create-epic tickets.csv            # create an epic + child tickets
+./jira-tui --create-ticket                      # interactively enter a single ticket
+./jira-tui --create-csv-from-epic PROJ-123      # export epic children to PROJ-123.csv
+./jira-tui --show-tickets                       # browse previously created tickets
+./jira-tui --project-key MYPROJ                 # skip board picker
+./jira-tui --help                               # show all options and env vars
 ```
 
 ## Modes
@@ -72,6 +74,28 @@ If you choose **Epic**, a "Add a subtask?" prompt appears after creation. Select
 ### `--show-tickets` / `-st`
 
 Opens a browsable list of all previously created tickets from the local SQLite history. No network access required. Press `d` to delete a record.
+
+### `--create-csv-from-epic` / `-ccfe <KEY>`
+
+Queries the given Jira issue key, confirms it is an **Epic**, then fetches all child issues and presents them in a scrollable review screen. After confirming, enter a file path (default: `<KEY>.csv`) and press **Enter** to write the CSV.
+
+**Output columns:** `Title`, `Description`, `Assignee`, `Labels`, `Requester`
+
+The first four columns match the standard input CSV format, so the exported file can be passed directly back to `jira-tui` to re-create or adapt the tickets.
+
+> **Note:** child-issue detection uses `parent = KEY` JQL (team-managed projects) with an automatic fallback to `"Epic Link" = KEY` for classic project configurations.
+
+### Epic → CSV keyboard reference
+
+| Screen | Key | Action |
+|--------|-----|--------|
+| Review | `↑` `↓` / `j` `k` | Scroll child-issue list |
+| Review | `PgUp` / `PgDn` | Jump a page |
+| Review | `Enter` | Proceed to save-path prompt |
+| Review | `q` / `Esc` | Quit |
+| Save | `Enter` | Write CSV to the entered path |
+| Save | `Esc` | Go back to review |
+| Saved | `Enter` / `q` / `Esc` | Quit |
 
 ## CSV format
 
