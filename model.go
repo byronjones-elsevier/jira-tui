@@ -2699,7 +2699,7 @@ func (m model) viewShowTickets() string {
 		}
 
 		maxTitle := w - 42
-		row := cur + keyTag + "  " + typeTag + "  " + parent + nameStyle.Render(truncate(r.Title, maxTitle)) + "  " + date
+		row := cur + date + "  " + keyTag + "  " + typeTag + "  " + parent + nameStyle.Render(truncate(r.Title, maxTitle))
 		rows = append(rows, row)
 	}
 
