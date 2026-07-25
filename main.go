@@ -15,6 +15,7 @@ const (
 	modeNormal appMode = iota // create tickets from CSV
 	modeEpic                  // create an epic, then link CSV rows as children
 	modeShow                  // display local ticket history only
+	modeManual                // interactively enter a single ticket (no CSV)
 )
 
 func main() {
@@ -30,6 +31,8 @@ func main() {
 			mode = modeEpic
 		case "--show-tickets", "-st":
 			mode = modeShow
+		case "--create-ticket", "-ct":
+			mode = modeManual
 		case "--project-key", "-pk":
 			if i+1 < len(args) {
 				i++
@@ -55,7 +58,7 @@ func main() {
 	defer db.Close()
 
 	var tickets []Ticket
-	if mode != modeShow {
+	if mode != modeShow && mode != modeManual {
 		tickets, err = parseCSV(csvPath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "error reading CSV: %v\n", err)
@@ -87,6 +90,7 @@ USAGE:
 
 OPTIONS:
   -ce, --create-epic         Create an epic and link CSV rows as child tickets
+  -ct, --create-ticket       Interactively enter a single ticket (no CSV needed)
   -st, --show-tickets        Display previously created tickets from local history
   -pk, --project-key <KEY>   Skip board picker and use this Jira project key
   -h, --help                 Show this help message
@@ -99,6 +103,8 @@ EXAMPLES:
   jira-tui
   jira-tui tickets.csv
   jira-tui --create-epic tickets.csv
+  jira-tui --create-ticket
+  jira-tui --project-key MYPROJ --create-ticket
   jira-tui --project-key MYPROJ tickets.csv
   jira-tui --show-tickets
 
@@ -113,6 +119,7 @@ ENVIRONMENT VARIABLES (override config file):
   JIRA_API_TOKEN             Atlassian API token
   JIRA_TUI_DIR               Override data directory (default: ~/.jira-tui/)
   JIRA_BOARD_CACHE_TTL_HOURS Board list cache lifetime in hours (default: 24)
+  JIRA_USE_ADF               Send descriptions as Atlassian Document Format via REST v3 (true/1)
 
 KEYBOARD (TUI):
   Tab / Shift+Tab   Move between fields

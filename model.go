@@ -33,6 +33,8 @@ const (
 	screenEpicDupWarn                 // confirm when a matching epic already exists
 	screenDupCheck                    // per-ticket duplicate decision
 	screenShowTickets                 // browse local history
+	screenManualEntry                 // interactive single-ticket form (modeManual)
+	screenManualContinue              // "add subtask or finish?" prompt after epic creation
 )
 
 // ── Messages ─────────────────────────────────────────────────────────────────
@@ -68,6 +70,15 @@ type epicCreatedMsg struct {
 type historyLoadedMsg struct {
 	records []TicketRecord
 	err     error
+}
+
+type manualTicketCreatedMsg struct {
+	key          string
+	url          string
+	ticket       Ticket
+	issueType    string
+	err          error
+	assigneeWarn string
 }
 
 // ── dupCheckItem holds a ticket whose title+description matches a history record. ─
@@ -141,6 +152,16 @@ type model struct {
 	epicURL       string
 	existingEpics []TicketRecord // populated when same-title epic found
 
+	// Manual entry (screenManualEntry / screenManualContinue)
+	// manualInputs[0]=title, [1]=assignee, [2]=labels; description uses manualDesc.
+	manualInputs     []textinput.Model
+	manualDesc       textarea.Model
+	manualTypeCursor int // index into issueTypes
+	manualFocus      int // 0=title,1=desc,2=assignee,3=labels,4=issuetype
+	manualResults    []CreateResult // accumulated results across manual loop
+	manualParentKey  string         // non-empty when creating subtasks under an epic
+	manualCreating   bool           // API call in flight
+
 	// Dup check (screenDupCheck)
 	dupItems  []dupCheckItem
 	dupCursor int
@@ -205,6 +226,21 @@ func newModel(cfg Config, tickets []Ticket, db *sql.DB, mode appMode) model {
 	epicDesc.SetHeight(4)
 	epicDesc.CharLimit = 2048
 
+	// Manual entry form: title, assignee, labels inputs + separate description textarea.
+	manualInps := make([]textinput.Model, 3)
+	for i, ph := range []string{"Ticket title", "Assignee email or display name", "Labels (semicolon-separated)"} {
+		t := textinput.New()
+		t.CharLimit = 256
+		t.Placeholder = ph
+		manualInps[i] = t
+	}
+	manualInps[2].CharLimit = 512
+	manualDesc := textarea.New()
+	manualDesc.Placeholder = "Description (Enter for newlines, Tab to advance)"
+	manualDesc.SetWidth(50)
+	manualDesc.SetHeight(5)
+	manualDesc.CharLimit = 4096
+
 	s := spinner.New()
 	s.Spinner = spinner.Dot
 	s.Style = lipgloss.NewStyle().Foreground(purple)
@@ -233,6 +269,8 @@ func newModel(cfg Config, tickets []Ticket, db *sql.DB, mode appMode) model {
 		boardSearch:      boardSearch,
 		epicInputs:       epicInps,
 		epicDescTA:       epicDesc,
+		manualInputs:     manualInps,
+		manualDesc:       manualDesc,
 		spinner:          s,
 		selectedTickets:  selected,
 		assigneeFallback: af,
@@ -343,6 +381,29 @@ func (m model) cmdCreateEpic() tea.Cmd {
 	}
 }
 
+func (m model) cmdCreateManualTicket(t Ticket, issueType, parentKey string) tea.Cmd {
+	client := m.client
+	projectKey := m.projectKey
+	return func() tea.Msg {
+		var assigneeWarn string
+		assigneeID := ""
+		if t.Assignee != "" {
+			var err error
+			assigneeID, err = client.ResolveAccountID(t.Assignee)
+			if err != nil || assigneeID == "" {
+				assigneeWarn = t.Assignee
+				assigneeID = ""
+			}
+		}
+		key, err := client.CreateIssue(projectKey, issueType, t, assigneeID, parentKey)
+		url := ""
+		if err == nil && key != "" {
+			url = client.baseURL + "/browse/" + key
+		}
+		return manualTicketCreatedMsg{key: key, url: url, ticket: t, issueType: issueType, err: err, assigneeWarn: assigneeWarn}
+	}
+}
+
 func (m model) cmdLoadHistory() tea.Cmd {
 	db := m.db
 	return func() tea.Msg {
@@ -388,6 +449,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// --project-key supplied: skip board picker entirely.
 		if m.projectKey != "" {
 			m.loading = false
+			if m.mode == modeManual {
+				m.screen = screenManualEntry
+				return m, m.manualInputs[0].Focus()
+			}
 			m.screen = screenSettings
 			return m, nil
 		}
@@ -522,6 +587,43 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.histRecords = msg.records
 		}
 		return m, nil
+
+	case manualTicketCreatedMsg:
+		m.manualCreating = false
+		if msg.err != nil {
+			m.err = msg.err
+			return m, nil
+		}
+		result := CreateResult{
+			Ticket:       msg.ticket,
+			Key:          msg.key,
+			URL:          msg.url,
+			Err:          msg.err,
+			AssigneeWarn: msg.assigneeWarn,
+		}
+		if msg.key != "" {
+			_ = insertTicket(m.db, TicketRecord{
+				Title:       msg.ticket.Title,
+				Description: msg.ticket.Description,
+				JiraKey:     msg.key,
+				URL:         msg.url,
+				CreatedAt:   time.Now(),
+				TicketType:  msg.issueType,
+				ParentKey:   m.manualParentKey,
+				ProjectKey:  m.projectKey,
+				Assignee:    msg.ticket.Assignee,
+				Labels:      msg.ticket.Labels,
+			})
+		}
+		m.manualResults = append(m.manualResults, result)
+		if msg.issueType == "Epic" && msg.key != "" {
+			m.epicKey = msg.key
+			m.epicURL = msg.url
+			m.epicTitle = msg.ticket.Title
+			m.screen = screenManualContinue
+			return m, nil
+		}
+		return m.manualDone()
 	}
 
 	return m, nil
@@ -545,6 +647,10 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleEpicDupWarnKey(msg)
 	case screenCreating:
 		return m.handleCreatingKey(msg)
+	case screenManualEntry:
+		return m.handleManualEntryKey(msg)
+	case screenManualContinue:
+		return m.handleManualContinueKey(msg)
 	case screenDupCheck:
 		return m.handleDupCheckKey(msg)
 	case screenShowTickets:
@@ -561,6 +667,191 @@ func (m model) handleCreatingKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc", "q":
 		m.creationAborted = true
+	}
+	return m, nil
+}
+
+// ── Manual entry helpers ───────────────────────────────────────────────────────
+
+const numManualFields = 5 // title(0), desc(1), assignee(2), labels(3), issuetype(4)
+
+func (m model) blurManualField() model {
+	switch m.manualFocus {
+	case 0:
+		m.manualInputs[0].Blur()
+	case 1:
+		m.manualDesc.Blur()
+	case 2:
+		m.manualInputs[1].Blur()
+	case 3:
+		m.manualInputs[2].Blur()
+	}
+	return m
+}
+
+func (m model) focusManualField(i int) (model, tea.Cmd) {
+	m.manualFocus = i
+	switch i {
+	case 0:
+		return m, m.manualInputs[0].Focus()
+	case 1:
+		return m, m.manualDesc.Focus()
+	case 2:
+		return m, m.manualInputs[1].Focus()
+	case 3:
+		return m, m.manualInputs[2].Focus()
+	}
+	return m, nil
+}
+
+func (m model) resetManualForm() model {
+	m.manualInputs[0].Reset()
+	m.manualInputs[1].Reset()
+	m.manualInputs[2].Reset()
+	m.manualDesc.Reset()
+	m.manualFocus = 0
+	m.manualTypeCursor = 0
+	m.err = nil
+	return m
+}
+
+func (m model) submitManualTicket() (model, tea.Cmd) {
+	title := strings.TrimSpace(m.manualInputs[0].Value())
+	if title == "" {
+		m.err = fmt.Errorf("title is required")
+		return m, nil
+	}
+	desc := m.manualDesc.Value()
+	assignee := strings.TrimSpace(m.manualInputs[1].Value())
+	labelsRaw := m.manualInputs[2].Value()
+	var labels []string
+	for _, l := range strings.Split(labelsRaw, ";") {
+		if l = strings.TrimSpace(l); l != "" {
+			labels = append(labels, l)
+		}
+	}
+	issueType := issueTypes[m.manualTypeCursor]
+	t := Ticket{Title: title, Description: desc, Assignee: assignee, Labels: labels}
+	m.manualCreating = true
+	m.err = nil
+	return m, m.cmdCreateManualTicket(t, issueType, m.manualParentKey)
+}
+
+// manualDone populates m.results/tickets/selectedTickets from manualResults then
+// transitions to screenDone so the existing done view works without modification.
+func (m model) manualDone() (model, tea.Cmd) {
+	m.tickets = make([]Ticket, len(m.manualResults))
+	m.results = make([]CreateResult, len(m.manualResults))
+	m.selectedTickets = make(map[int]bool, len(m.manualResults))
+	for i, r := range m.manualResults {
+		m.tickets[i] = r.Ticket
+		m.results[i] = r
+		m.selectedTickets[i] = true
+	}
+	m.doneCursor = 0
+	m.doneOffset = 0
+	m.screen = screenDone
+	return m, nil
+}
+
+// ── Manual entry keys ─────────────────────────────────────────────────────────
+
+func (m model) handleManualEntryKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.manualCreating {
+		return m, nil
+	}
+
+	switch msg.String() {
+	case "tab":
+		m = m.blurManualField()
+		var cmd tea.Cmd
+		m, cmd = m.focusManualField((m.manualFocus + 1) % numManualFields)
+		return m, cmd
+
+	case "shift+tab":
+		m = m.blurManualField()
+		var cmd tea.Cmd
+		m, cmd = m.focusManualField((m.manualFocus - 1 + numManualFields) % numManualFields)
+		return m, cmd
+
+	case "up", "down":
+		if m.manualFocus == 1 {
+			var cmd tea.Cmd
+			m.manualDesc, cmd = m.manualDesc.Update(msg)
+			return m, cmd
+		}
+		if m.manualFocus == 4 {
+			if msg.String() == "up" && m.manualTypeCursor > 0 {
+				m.manualTypeCursor--
+			} else if msg.String() == "down" && m.manualTypeCursor < len(issueTypes)-1 {
+				m.manualTypeCursor++
+			}
+			return m, nil
+		}
+
+	case "left":
+		if m.manualFocus == 4 && m.manualTypeCursor > 0 {
+			m.manualTypeCursor--
+		}
+		return m, nil
+
+	case "right":
+		if m.manualFocus == 4 && m.manualTypeCursor < len(issueTypes)-1 {
+			m.manualTypeCursor++
+		}
+		return m, nil
+
+	case "enter":
+		if m.manualFocus == 1 {
+			// Pass enter to textarea so the user can insert newlines.
+			var cmd tea.Cmd
+			m.manualDesc, cmd = m.manualDesc.Update(msg)
+			return m, cmd
+		}
+		if m.manualFocus == numManualFields-1 {
+			return m.submitManualTicket()
+		}
+		m = m.blurManualField()
+		var cmd tea.Cmd
+		m, cmd = m.focusManualField(m.manualFocus + 1)
+		return m, cmd
+
+	case "ctrl+s":
+		return m.submitManualTicket()
+
+	case "esc":
+		m = m.blurManualField()
+		if len(m.manualResults) > 0 {
+			return m.manualDone()
+		}
+		m.screen = screenBoards
+		return m, m.boardSearch.Focus()
+	}
+
+	// Route keypresses to the focused widget.
+	var cmd tea.Cmd
+	switch m.manualFocus {
+	case 0:
+		m.manualInputs[0], cmd = m.manualInputs[0].Update(msg)
+	case 1:
+		m.manualDesc, cmd = m.manualDesc.Update(msg)
+	case 2:
+		m.manualInputs[1], cmd = m.manualInputs[1].Update(msg)
+	case 3:
+		m.manualInputs[2], cmd = m.manualInputs[2].Update(msg)
+	}
+	return m, cmd
+}
+
+func (m model) handleManualContinueKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch strings.ToLower(msg.String()) {
+	case "y", "enter":
+		m.manualParentKey = m.epicKey
+		m = m.resetManualForm()
+		m.screen = screenManualEntry
+		return m, m.manualInputs[0].Focus()
+	case "n", "esc", "q":
+		return m.manualDone()
 	}
 	return m, nil
 }
@@ -610,6 +901,10 @@ func (m model) handleDoneKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "e":
 		_ = m.exportResultsCSV()
 	case "r":
+		// Retry is not supported for modeManual (no cmdCreateTicket infrastructure).
+		if m.mode == modeManual {
+			return m, nil
+		}
 		// Retry failed tickets. Deselect successful ones and reset failed results.
 		hasFailed := false
 		for i, r := range m.results {
@@ -774,6 +1069,10 @@ func (m model) handleBoardsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if key != "" {
 				m.projectKey = key
 				m.manualKeyMode = false
+				if m.mode == modeManual {
+					m.screen = screenManualEntry
+					return m, m.manualInputs[0].Focus()
+				}
 				m.screen = screenSettings
 			}
 		case "esc":
@@ -835,6 +1134,10 @@ func (m model) handleBoardsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if len(filtered) > 0 && m.boardCursor < len(filtered) {
 			m.selectedBoard = filtered[m.boardCursor]
 			m.projectKey = m.selectedBoard.ProjectKey
+			if m.mode == modeManual {
+				m.screen = screenManualEntry
+				return m, m.manualInputs[0].Focus()
+			}
 			m.screen = screenSettings
 		}
 
@@ -1297,6 +1600,10 @@ func (m model) View() string {
 		return m.viewDupCheck()
 	case screenShowTickets:
 		return m.viewShowTickets()
+	case screenManualEntry:
+		return m.viewManualEntry()
+	case screenManualContinue:
+		return m.viewManualContinue()
 	}
 	return ""
 }
@@ -1754,6 +2061,99 @@ func (m model) viewCreating() string {
 		panelStyle.Width(w).Render(body))
 }
 
+// ── Manual entry view ─────────────────────────────────────────────────────────
+
+func (m model) viewManualEntry() string {
+	if m.manualCreating {
+		return m.viewSpinner("Creating ticket…")
+	}
+
+	w := clamp(m.width-8, 60, 84)
+	inputW := w - 8
+
+	header := titleStyle.Render("Create Ticket")
+	if m.manualParentKey != "" {
+		header += "  " + labelStyle.Render("child of") + " " + successStyle.Render(m.manualParentKey)
+	}
+
+	fieldStyle := func(focus int) lipgloss.Style {
+		if m.manualFocus == focus {
+			return focusedInputStyle
+		}
+		return blurredInputStyle
+	}
+
+	titleRow := subtitleStyle.Render("Title *") + "\n" +
+		fieldStyle(0).Width(inputW).Render(m.manualInputs[0].View())
+
+	descRow := subtitleStyle.Render("Description") + "\n" +
+		fieldStyle(1).Width(inputW).Render(m.manualDesc.View())
+
+	assigneeRow := subtitleStyle.Render("Assignee") + "\n" +
+		fieldStyle(2).Width(inputW).Render(m.manualInputs[1].View())
+
+	labelsRow := subtitleStyle.Render("Labels (semicolon-separated)") + "\n" +
+		fieldStyle(3).Width(inputW).Render(m.manualInputs[2].View())
+
+	// Issue type picker: horizontal list, selected highlighted.
+	typeLabel := subtitleStyle.Render("Issue Type")
+	if m.manualFocus == 4 {
+		typeLabel = selectedItemStyle.Render("Issue Type")
+	}
+	var typeOpts []string
+	for i, it := range issueTypes {
+		if i == m.manualTypeCursor {
+			typeOpts = append(typeOpts, successStyle.Render("● "+it))
+		} else {
+			typeOpts = append(typeOpts, dimStyle.Render("○ "+it))
+		}
+	}
+	typeRow := typeLabel + "\n  " + strings.Join(typeOpts, "   ")
+
+	errLine := ""
+	if m.err != nil {
+		errLine = errorStyle.Render("⚠  " + m.err.Error())
+	}
+
+	footer := footerStyle.Width(w - 4).Render("Tab move field  •  ←/→ change type  •  Enter / Ctrl+S create  •  Esc back")
+
+	parts := []string{header, "", titleRow, "", descRow, "", assigneeRow, "", labelsRow, "", typeRow}
+	if errLine != "" {
+		parts = append(parts, "", errLine)
+	}
+	parts = append(parts, "", footer)
+
+	body := lipgloss.JoinVertical(lipgloss.Left, parts...)
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center,
+		panelStyle.Width(w).Render(body))
+}
+
+// ── Manual continue view ──────────────────────────────────────────────────────
+
+func (m model) viewManualContinue() string {
+	w := clamp(m.width-8, 60, 84)
+
+	epicRow := successStyle.Render("✓") + " " + labelStyle.Render("EPIC") + " " +
+		dimStyle.Render(fmt.Sprintf("%-12s", m.epicKey)) + " " + truncate(m.epicTitle, 36)
+	urlRow := dimStyle.Render("  " + m.epicURL)
+
+	prompt := "Add a subtask?   " +
+		successStyle.Render("[Y]") + dimStyle.Render("es") + "  " +
+		dimStyle.Render("[N]") + dimStyle.Render("o / Esc to finish")
+
+	body := lipgloss.JoinVertical(lipgloss.Left,
+		titleStyle.Render("Epic Created!"),
+		"",
+		epicRow,
+		urlRow,
+		"",
+		prompt,
+	)
+
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center,
+		panelStyle.Width(w).Render(body))
+}
+
 // ── Done view ─────────────────────────────────────────────────────────────────
 
 func (m model) viewDone() string {
@@ -1819,7 +2219,7 @@ func (m model) viewDone() string {
 	}
 
 	retryHint := ""
-	if failed > 0 {
+	if failed > 0 && m.mode != modeManual {
 		retryHint = "  •  r retry failed"
 	}
 	footer := footerStyle.Width(w).Render("↑↓/jk  •  o open URL  •  e export CSV" + retryHint + "  •  q / Esc to exit")

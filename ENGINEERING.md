@@ -24,6 +24,7 @@ The program has three modes, selected at launch via flags:
 | _(none)_ | `modeNormal` | Auth → board → settings → ticket list → create → done |
 | `--create-epic` / `-ce` | `modeEpic` | Same flow but inserts Epic Setup screen; tickets become children of the created epic |
 | `--show-tickets` / `-st` | `modeShow` | Skips Jira auth entirely; loads local history from SQLite and displays it |
+| `--create-ticket` / `-ct` | `modeManual` | Auth → board → manual form (title/desc/assignee/labels/type) → create; if Epic, loops to offer subtask creation |
 
 ## Screen state machine
 
@@ -39,6 +40,12 @@ modeEpic:
 
 modeShow:
   screenShowTickets → quit
+
+modeManual:
+  screenAuth → screenVerify → screenBoards
+    → screenManualEntry (form: title/desc/assignee/labels/issuetype)
+    → [screenManualContinue if Epic created] → screenManualEntry (subtask loop)
+    → screenDone
 ```
 
 - `[screenDupCheck]` and `[screenEpicDupWarn]` are only shown when duplicates are found in the local DB.
