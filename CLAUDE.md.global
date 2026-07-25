@@ -1,0 +1,10 @@
+# Global Rules
+
+## Git hygiene for code projects
+
+Whenever working on a code project (any session involving source files, scripts, or config):
+
+1. **Check for git on first file change.** Before making any edits, check whether the project directory is a git repo (`git rev-parse --git-dir`).
+2. **Offer to initialise if missing.** If there is no git repo, ask the user whether to create one. If they agree, run `git init`, create a sensible `.gitignore` for the language/stack, and make an initial commit of existing files.
+3. **Commit after every code update.** After each round of file changes (new file, edit, delete), stage and commit with a short, descriptive message. Use conventional-commit style where it fits (`feat:`, `fix:`, `refactor:`, `docs:`, `chore:`).
+4. **Never leave changes uncommitted at the end of a task.** Before wrapping up, confirm all edits are committed.
