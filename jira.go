@@ -172,27 +172,49 @@ func (c *JiraClient) CreateIssue(projectKey, issueType string, t Ticket, assigne
 	for _, l := range t.Labels {
 		l = strings.TrimSpace(l)
 		l = strings.ReplaceAll(l, " ", "-")
-		if l != "" {
-			b, _ := json.Marshal(l)
-			labelParts = append(labelParts, string(b))
+		if l == "" {
+			continue
 		}
+		b, err := json.Marshal(l)
+		if err != nil {
+			return "", fmt.Errorf("marshal label %q: %w", l, err)
+		}
+		labelParts = append(labelParts, string(b))
 	}
 	labelsJSON := "[" + strings.Join(labelParts, ",") + "]"
 
-	summaryJSON, _ := json.Marshal(t.Title)
-	descJSON, _ := json.Marshal(t.Description)
-	projJSON, _ := json.Marshal(projectKey)
-	typeJSON, _ := json.Marshal(issueType)
+	summaryJSON, err := json.Marshal(t.Title)
+	if err != nil {
+		return "", fmt.Errorf("marshal title: %w", err)
+	}
+	descJSON, err := json.Marshal(t.Description)
+	if err != nil {
+		return "", fmt.Errorf("marshal description: %w", err)
+	}
+	projJSON, err := json.Marshal(projectKey)
+	if err != nil {
+		return "", fmt.Errorf("marshal project key: %w", err)
+	}
+	typeJSON, err := json.Marshal(issueType)
+	if err != nil {
+		return "", fmt.Errorf("marshal issue type: %w", err)
+	}
 
 	assigneeClause := ""
 	if assigneeID != "" {
-		aid, _ := json.Marshal(assigneeID)
+		aid, err := json.Marshal(assigneeID)
+		if err != nil {
+			return "", fmt.Errorf("marshal assignee: %w", err)
+		}
 		assigneeClause = fmt.Sprintf(`,"assignee":{"accountId":%s}`, aid)
 	}
 
 	parentClause := ""
 	if parentKey != "" {
-		pkJSON, _ := json.Marshal(parentKey)
+		pkJSON, err := json.Marshal(parentKey)
+		if err != nil {
+			return "", fmt.Errorf("marshal parent key: %w", err)
+		}
 		parentClause = fmt.Sprintf(`,"parent":{"key":%s}`, pkJSON)
 	}
 
@@ -224,10 +246,22 @@ func (c *JiraClient) CreateEpic(projectKey, title, desc, requester string) (stri
 		}
 	}
 
-	summaryJSON, _ := json.Marshal(title)
-	descJSON, _ := json.Marshal(desc)
-	projJSON, _ := json.Marshal(projectKey)
-	epicNameJSON, _ := json.Marshal(title)
+	summaryJSON, err := json.Marshal(title)
+	if err != nil {
+		return "", fmt.Errorf("marshal epic title: %w", err)
+	}
+	descJSON, err := json.Marshal(desc)
+	if err != nil {
+		return "", fmt.Errorf("marshal epic description: %w", err)
+	}
+	projJSON, err := json.Marshal(projectKey)
+	if err != nil {
+		return "", fmt.Errorf("marshal project key: %w", err)
+	}
+	epicNameJSON, err := json.Marshal(title)
+	if err != nil {
+		return "", fmt.Errorf("marshal epic name: %w", err)
+	}
 
 	// Try with Epic Name custom field first (required on older Jira Cloud configs).
 	payload := fmt.Sprintf(
@@ -236,7 +270,11 @@ func (c *JiraClient) CreateEpic(projectKey, title, desc, requester string) (stri
 	)
 	data, err := c.postJSON("/rest/api/2/issue", payload)
 	if err != nil {
-		// Retry without the custom field — some instances don't require it.
+		// Only retry without customfield_10011 when Jira rejects the field itself
+		// (field-validation 400). All other errors (network, 403, 404) are real failures.
+		if !strings.Contains(err.Error(), "customfield_10011") {
+			return "", err
+		}
 		payload = fmt.Sprintf(
 			`{"fields":{"project":{"key":%s},"summary":%s,"description":%s,"issuetype":{"name":"Epic"}}}`,
 			projJSON, summaryJSON, descJSON,

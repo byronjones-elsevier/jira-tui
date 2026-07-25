@@ -172,8 +172,8 @@ SQLite local reads/writes are sub-millisecond. Wrapping them in `tea.Cmd` gorout
 | Severity | File | Description |
 |----------|------|-------------|
 | **High** | `model.go:startCreation` | If all selected tickets are cleared by the dup-check screen, `startCreation()` sets `screen = screenCreating` then returns `nil` cmd — TUI is stuck with no progress and no exit path other than Ctrl+C. **Fixed in test suite.** |
-| **High** | `jira.go:CreateEpic` | The retry-without-`customfield_10011` fires on *all* errors (network, 403, 404, etc.), not just field-validation failures. This makes two identical API calls and surfaces the second error, masking the real cause. |
-| **High** | `jira.go:CreateIssue` | `json.Marshal` errors on all payload fields are silently discarded (`_`). A title or description containing invalid UTF-8 bytes produces a malformed JSON payload (`"summary":,`) which Jira rejects with an opaque 400 error. |
+| **High** | `jira.go:CreateEpic` | Retry-without-`customfield_10011` fires on all errors, not just field-validation 400. **Fixed in code** (only retries when error body contains "customfield_10011"). |
+| **High** | `jira.go:CreateIssue` | `json.Marshal` errors on all payload fields silently discarded. **Fixed in code** (all marshal calls now propagate errors). |
 | **Medium** | `db.go:insertTicket` | `json.Marshal(nil)` for `[]string` returns `"null"`, not `"[]"`. On read-back `scanTickets` sets `Labels` to `nil`. Normalised to `[]string{}` after fix. **Fixed in code.** |
 | **Medium** | `db.go:scanTickets` | Malformed `created_at` values silently produce zero-time (`0001-01-01`); corrupted `labels` JSON silently produces nil slice. No warnings emitted. |
 | **Medium** | `model.go:checkDupsAndProceed` | DB errors in `findDuplicates` are silently treated as "no duplicates" — duplicate detection is bypassed on DB failure. |
