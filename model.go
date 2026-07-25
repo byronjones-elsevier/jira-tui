@@ -195,13 +195,14 @@ type model struct {
 	exportCSVResultPending string          // staged path awaiting overwrite confirm
 
 	// Show tickets (screenShowTickets)
-	histRecords       []TicketRecord
-	histCursor        int
-	histOffset        int
-	histLoading       bool
-	histConfirmDelete     bool  // true while waiting for y/n on local-only delete
+	histRecords          []TicketRecord
+	histCursor           int
+	histOffset           int
+	histLoading          bool
+	histSearch           textinput.Model
+	histConfirmDelete    bool  // true while waiting for y/n on local-only delete
 	histConfirmDeleteJira bool  // true while waiting for y/n on Jira + local delete
-	histJiraDeleteErr     error // set when a Jira delete fails
+	histJiraDeleteErr    error // set when a Jira delete fails
 
 	// UI helpers
 	spinner    spinner.Model
@@ -286,6 +287,10 @@ func newModel(cfg Config, tickets []Ticket, db *sql.DB, mode appMode, firstRun b
 	exportResultInp := textinput.New()
 	exportResultInp.CharLimit = 256
 
+	histSearchInp := textinput.New()
+	histSearchInp.Placeholder = "Filter tickets…"
+	histSearchInp.CharLimit = 100
+
 	s := spinner.New()
 	s.Spinner = spinner.Dot
 	s.Style = lipgloss.NewStyle().Foreground(purple)
@@ -318,6 +323,7 @@ func newModel(cfg Config, tickets []Ticket, db *sql.DB, mode appMode, firstRun b
 		manualDesc:       manualDesc,
 		epicCSVPathInp:     epicCSVInp,
 		exportCSVResultInp: exportResultInp,
+		histSearch:         histSearchInp,
 		spinner:            s,
 		selectedTickets:  selected,
 		assigneeFallback: af,
@@ -361,7 +367,7 @@ func (m model) Init() tea.Cmd {
 		return nil
 	}
 	if m.mode == modeShow {
-		return tea.Batch(m.spinner.Tick, m.cmdLoadHistory())
+		return tea.Batch(textinput.Blink, m.spinner.Tick, m.cmdLoadHistory())
 	}
 	cmds := []tea.Cmd{textinput.Blink, m.spinner.Tick}
 	if m.screen == screenVerify {
@@ -1833,19 +1839,27 @@ func (m model) handleShowTicketsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Clear any lingering Jira delete error on any keypress.
 	m.histJiraDeleteErr = nil
 
+	filtered := m.histFiltered()
+
 	if m.histConfirmDelete {
 		switch msg.String() {
 		case "y", "Y":
-			if len(m.histRecords) > 0 {
-				rec := m.histRecords[m.histCursor]
+			if len(filtered) > 0 {
+				rec := filtered[m.histCursor]
 				_ = deleteTicket(m.db, rec.ID)
-				m.histRecords = append(m.histRecords[:m.histCursor], m.histRecords[m.histCursor+1:]...)
-				if m.histCursor >= len(m.histRecords) {
-					m.histCursor = maxInt(0, len(m.histRecords)-1)
+				for i, r := range m.histRecords {
+					if r.ID == rec.ID {
+						m.histRecords = append(m.histRecords[:i], m.histRecords[i+1:]...)
+						break
+					}
+				}
+				newFiltered := m.histFiltered()
+				if m.histCursor >= len(newFiltered) {
+					m.histCursor = maxInt(0, len(newFiltered)-1)
 				}
 				ps := m.histPageSize()
-				if m.histOffset > maxInt(0, len(m.histRecords)-ps) {
-					m.histOffset = maxInt(0, len(m.histRecords)-ps)
+				if m.histOffset > maxInt(0, len(newFiltered)-ps) {
+					m.histOffset = maxInt(0, len(newFiltered)-ps)
 				}
 			}
 			m.histConfirmDelete = false
@@ -1858,8 +1872,8 @@ func (m model) handleShowTicketsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.histConfirmDeleteJira {
 		switch msg.String() {
 		case "y", "Y":
-			if len(m.histRecords) > 0 {
-				rec := m.histRecords[m.histCursor]
+			if len(filtered) > 0 {
+				rec := filtered[m.histCursor]
 				m.histConfirmDeleteJira = false
 				m.histLoading = true
 				return m, m.cmdDeleteJiraIssue(rec.JiraKey, rec.ID)
@@ -1871,6 +1885,7 @@ func (m model) handleShowTicketsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Navigation keys work whether or not the search input is focused.
 	switch msg.String() {
 	case "up", "k":
 		if m.histCursor > 0 {
@@ -1879,14 +1894,16 @@ func (m model) handleShowTicketsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.histOffset = m.histCursor
 			}
 		}
+		return m, nil
 	case "down", "j":
-		if m.histCursor < len(m.histRecords)-1 {
+		if m.histCursor < len(filtered)-1 {
 			m.histCursor++
 			ps := m.histPageSize()
 			if m.histCursor >= m.histOffset+ps {
 				m.histOffset = m.histCursor - ps + 1
 			}
 		}
+		return m, nil
 	case "pgup", "ctrl+b":
 		ps := m.histPageSize()
 		m.histCursor -= ps
@@ -1897,30 +1914,63 @@ func (m model) handleShowTicketsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.histOffset < 0 {
 			m.histOffset = 0
 		}
+		return m, nil
 	case "pgdown", "ctrl+f":
 		ps := m.histPageSize()
 		m.histCursor += ps
-		if m.histCursor >= len(m.histRecords) {
-			m.histCursor = maxInt(0, len(m.histRecords)-1)
+		if m.histCursor >= len(filtered) {
+			m.histCursor = maxInt(0, len(filtered)-1)
 		}
 		m.histOffset += ps
-		maxOff := maxInt(0, len(m.histRecords)-ps)
+		maxOff := maxInt(0, len(filtered)-ps)
 		if m.histOffset > maxOff {
 			m.histOffset = maxOff
 		}
+		return m, nil
+	}
+
+	// When the search input is focused, route remaining keys to it.
+	if m.histSearch.Focused() {
+		switch msg.String() {
+		case "esc":
+			if m.histSearch.Value() != "" {
+				m.histSearch.SetValue("")
+				m.histCursor, m.histOffset = 0, 0
+				return m, nil
+			}
+			m.histSearch.Blur()
+			return m, tea.Quit
+		case "enter":
+			m.histSearch.Blur()
+			return m, nil
+		default:
+			prevVal := m.histSearch.Value()
+			var cmd tea.Cmd
+			m.histSearch, cmd = m.histSearch.Update(msg)
+			if m.histSearch.Value() != prevVal {
+				m.histCursor, m.histOffset = 0, 0
+			}
+			return m, cmd
+		}
+	}
+
+	// Normal (search not focused) key handling.
+	switch msg.String() {
+	case "/":
+		return m, m.histSearch.Focus()
 	case "o":
-		if len(m.histRecords) > 0 {
-			if url := m.histRecords[m.histCursor].URL; url != "" {
+		if len(filtered) > 0 {
+			if url := filtered[m.histCursor].URL; url != "" {
 				_ = openURL(url)
 			}
 		}
 	case "d":
-		if len(m.histRecords) > 0 {
+		if len(filtered) > 0 {
 			m.histConfirmDelete = true
 			m.histConfirmDeleteJira = false
 		}
 	case "D":
-		if len(m.histRecords) > 0 {
+		if len(filtered) > 0 {
 			m.histConfirmDeleteJira = true
 			m.histConfirmDelete = false
 		}
@@ -1928,6 +1978,23 @@ func (m model) handleShowTicketsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 	return m, nil
+}
+
+func (m model) histFiltered() []TicketRecord {
+	q := strings.ToLower(strings.TrimSpace(m.histSearch.Value()))
+	if q == "" {
+		return m.histRecords
+	}
+	var out []TicketRecord
+	for _, r := range m.histRecords {
+		if strings.Contains(strings.ToLower(r.Title), q) ||
+			strings.Contains(strings.ToLower(r.JiraKey), q) ||
+			strings.Contains(strings.ToLower(r.TicketType), q) ||
+			strings.Contains(strings.ToLower(r.ParentKey), q) {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 func (m model) histPageSize() int {
@@ -2745,9 +2812,14 @@ func (m model) viewShowTickets() string {
 	}
 	title := titleStyle.Render("Ticket History")
 
+	searchBar := focusedInputStyle.Width(w - 8).Render(m.histSearch.View())
+
+	filtered := m.histFiltered()
+
 	if len(m.histRecords) == 0 {
 		body := lipgloss.JoinVertical(lipgloss.Left,
 			title, "",
+			searchBar, "",
 			dimStyle.Render("No tickets have been created yet."),
 			"",
 			footerStyle.Width(w).Render("q / Esc / Enter to quit"),
@@ -2758,16 +2830,25 @@ func (m model) viewShowTickets() string {
 
 	ps := m.histPageSize()
 	end := m.histOffset + ps
-	if end > len(m.histRecords) {
-		end = len(m.histRecords)
+	if end > len(filtered) {
+		end = len(filtered)
 	}
 
-	pageInfo := subtitleStyle.Render(fmt.Sprintf(
-		"%d – %d  of  %d tickets", m.histOffset+1, end, len(m.histRecords)))
+	var pageInfo string
+	if m.histSearch.Value() != "" {
+		pageInfo = subtitleStyle.Render(fmt.Sprintf(
+			"%d – %d  of  %d matches  (%d total)", m.histOffset+1, end, len(filtered), len(m.histRecords)))
+	} else {
+		pageInfo = subtitleStyle.Render(fmt.Sprintf(
+			"%d – %d  of  %d tickets", m.histOffset+1, end, len(filtered)))
+	}
+	if len(filtered) == 0 {
+		pageInfo = subtitleStyle.Render("No matches")
+	}
 
 	var rows []string
 	for i := m.histOffset; i < end; i++ {
-		r := m.histRecords[i]
+		r := filtered[i]
 		cur := "  "
 		nameStyle := lipgloss.NewStyle()
 		if i == m.histCursor {
@@ -2783,13 +2864,9 @@ func (m model) viewShowTickets() string {
 		parentVisual := 0
 		if r.ParentKey != "" {
 			parent = dimStyle.Render("↳ "+r.ParentKey) + "  "
-			parentVisual = 2 + len([]rune(r.ParentKey)) + 2 // "↳ " + key + "  "
+			parentVisual = 2 + len([]rune(r.ParentKey)) + 2
 		}
 
-		// Inner content width = panel width minus border (1 each side) and
-		// padding (2 each side from Padding(1,2)) = w - 6.
-		// Fixed visual columns used by non-title parts of the row:
-		//   cur(2) + date(10) + sep(2) + key + sep(2) + type(≤8) + sep(2) + parent
 		typeVisual := len([]rune(truncate(r.TicketType, 8)))
 		fixedUsed := 2 + 10 + 2 + len([]rune(r.JiraKey)) + 2 + typeVisual + 2 + parentVisual
 		maxTitle := (w - 6) - fixedUsed
@@ -2801,29 +2878,37 @@ func (m model) viewShowTickets() string {
 	}
 
 	var scrollHint string
-	if m.histOffset > 0 && end < len(m.histRecords) {
+	if m.histOffset > 0 && end < len(filtered) {
 		scrollHint = dimStyle.Render("  ↑ more above  ·  ↓ more below")
 	} else if m.histOffset > 0 {
 		scrollHint = dimStyle.Render("  ↑ more above")
-	} else if end < len(m.histRecords) {
+	} else if end < len(filtered) {
 		scrollHint = dimStyle.Render("  ↓ more below")
 	}
 
-	parts := []string{title, pageInfo, "", strings.Join(rows, "\n")}
+	listBody := strings.Join(rows, "\n")
+	if len(filtered) == 0 {
+		listBody = dimStyle.Render("No tickets match the filter.")
+	}
+
+	parts := []string{title, searchBar, pageInfo, "", listBody}
 	if scrollHint != "" {
 		parts = append(parts, scrollHint)
 	}
+
 	var footerText string
-	if m.histConfirmDelete && len(m.histRecords) > 0 {
-		rec := m.histRecords[m.histCursor]
+	if m.histConfirmDelete && len(filtered) > 0 {
+		rec := filtered[m.histCursor]
 		footerText = errorStyle.Render(fmt.Sprintf("Delete local record for %s %q? (y/N)", rec.JiraKey, truncate(rec.Title, 28)))
-	} else if m.histConfirmDeleteJira && len(m.histRecords) > 0 {
-		rec := m.histRecords[m.histCursor]
+	} else if m.histConfirmDeleteJira && len(filtered) > 0 {
+		rec := filtered[m.histCursor]
 		footerText = errorStyle.Render(fmt.Sprintf("Delete %s from Jira AND local? (y/N)", rec.JiraKey))
 	} else if m.histJiraDeleteErr != nil {
 		footerText = errorStyle.Render("Jira delete failed: " + m.histJiraDeleteErr.Error())
+	} else if m.histSearch.Focused() {
+		footerText = "Type to filter  •  Enter to browse results  •  Esc clear / quit"
 	} else {
-		footerText = "↑↓/jk navigate  •  PgUp/PgDn jump  •  o open URL  •  d local  •  D delete from Jira  •  q / Esc to quit"
+		footerText = "↑↓/jk navigate  •  / filter  •  o open URL  •  d local  •  D delete from Jira  •  q / Esc to quit"
 	}
 	parts = append(parts, footerStyle.Width(w).Render(footerText))
 
