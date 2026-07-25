@@ -155,7 +155,7 @@ Add dark mode,Implement dark theme support,,feature;ui
 | `↑` `↓` / `j` `k` | Scroll results |
 | `o` | Open selected ticket URL in browser |
 | `r` | Retry all failed tickets |
-| `e` | Export results to `jira_tickets_results.csv` |
+| `e` | Export results to `jira_tickets_results.csv` (confirmation shown inline) |
 | `q` / `Esc` / `Enter` | Quit |
 
 ### History screen (`--show-tickets`)

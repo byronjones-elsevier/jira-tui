@@ -131,3 +131,5 @@ Unit tests in `*_test.go` alongside source. Use `go test ./...`.
 - `GetEpicChildren` works for any issue type with children; tries `parent = KEY` first, then falls back to `"Epic Link" = KEY` for classic projects.
 - `createCSVFromEpic` saves to the **current working directory**, not `~/.jira-tui/`.
 - Config is saved atomically: write to temp file, then `os.Rename` — prevents credential loss on crash.
+- `lipgloss.SetHasDarkBackground(true)` is called in `main()` before `tea.NewProgram()`. Do not remove it. `textarea.New()` creates styles with `lipgloss.AdaptiveColor`; without this call, lipgloss fires a one-time OSC 11 terminal background-color query the first time the epic description textarea renders. By that point bubbletea owns stdin and the terminal response arrives as keystrokes in the focused input.
+- `exportedPath` / `exportErr` on the model track the last `e`-key CSV export result. `viewDone` renders a confirmation or error line from these fields — always update both in `handleDoneKey` when calling `exportResultsCSV()`.
