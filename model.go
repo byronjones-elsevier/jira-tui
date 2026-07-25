@@ -577,6 +577,29 @@ func (m model) handleDoneKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if url := m.doneRowURL(m.doneCursor); url != "" {
 			_ = openURL(url)
 		}
+	case "r":
+		// Retry failed tickets. Deselect successful ones and reset failed results.
+		hasFailed := false
+		for i, r := range m.results {
+			if m.selectedTickets[i] && r.Err != nil {
+				hasFailed = true
+				break
+			}
+		}
+		if !hasFailed {
+			return m, nil
+		}
+		for i := range m.results {
+			if m.selectedTickets[i] && m.results[i].Err != nil {
+				m.results[i] = CreateResult{}
+			} else {
+				m.selectedTickets[i] = false
+			}
+		}
+		m.progress = 0
+		m.doneCursor = 0
+		m.doneOffset = 0
+		return m.startCreation()
 	}
 	return m, nil
 }
@@ -925,8 +948,9 @@ func (m model) checkDupsAndProceed() (model, tea.Cmd) {
 }
 
 // startCreation begins the screenCreating flow.
+// In modeEpic, if the epic was already created (m.epicKey != ""), skip to tickets.
 func (m model) startCreation() (model, tea.Cmd) {
-	if m.mode == modeEpic {
+	if m.mode == modeEpic && m.epicKey == "" {
 		m.screen = screenCreating
 		m.epicPending = true
 		return m, m.cmdCreateEpic()
@@ -1679,7 +1703,11 @@ func (m model) viewDone() string {
 		scrollHint = dimStyle.Render("  ↓ more below")
 	}
 
-	footer := footerStyle.Width(w).Render("↑↓/jk scroll  •  o open URL  •  q / Esc / Enter to exit")
+	retryHint := ""
+	if failed > 0 {
+		retryHint = "  •  r retry failed"
+	}
+	footer := footerStyle.Width(w).Render("↑↓/jk scroll  •  o open URL" + retryHint + "  •  q / Esc / Enter to exit")
 
 	parts := []string{titleStyle.Render("✓ Done"), "", summary, "", strings.Join(visible, "\n")}
 	if scrollHint != "" {
