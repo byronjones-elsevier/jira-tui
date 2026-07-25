@@ -377,7 +377,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		m.screen = screenBoards
-		if cached, cacheAge, ok := loadBoardsCache(m.client.baseURL); ok {
+		const cacheTTL = 24 * time.Hour
+		if cached, cacheAge, ok := loadBoardsCache(m.client.baseURL); ok && time.Since(cacheAge) < cacheTTL {
 			m.boards = cached
 			m.boardsCacheAge = cacheAge
 			m.loading = false

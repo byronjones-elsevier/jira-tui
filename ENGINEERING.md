@@ -203,7 +203,7 @@ SQLite local reads/writes are sub-millisecond. Wrapping them in `tea.Cmd` gorout
 - **No multi-line description input.** The epic description and ticket descriptions are single-line `textinput` widgets capped at 256 characters; long descriptions must be authored in the CSV.
 - **No CSV export of results.** After creation there is no way to write the `JiraKey → Title` mapping to a file.
 - **No schema migration.** `migrateDB` is a single `CREATE TABLE IF NOT EXISTS`. Adding a column to an existing DB requires a manual `ALTER TABLE`; the code silently does nothing if the table already exists. **Fixed in code** (`schema_version` table tracks version; `migrateDB` runs numbered steps in order; bump `currentSchemaVersion` and add a step for future columns).
-- **No cache TTL.** A board list cached months ago is still served as the warm cache on startup (with a background sync); there is no maximum age after which a foreground re-fetch is forced.
+- **No cache TTL.** A board list cached months ago is still served as the warm cache on startup (with a background sync); there is no maximum age after which a foreground re-fetch is forced. **Fixed in code** (24-hour TTL; caches older than 24 h are treated as a miss, forcing a foreground fetch).
 - **`GetBoards` has no page cap.** If `IsLast` is never true the board-fetch loop runs indefinitely. A limit of ~40 pages would prevent a hang. **Fixed in code** (loop capped at 40 pages = 2 000 boards).
 - **`CreateIssue` uses REST v2 plain-string description.** Instances that require Atlassian Document Format (ADF) will create tickets with no description.
 - **No per-ticket assignee fallback visibility.** When an assignee cannot be resolved, the user is not told; the ticket is created as unassigned silently.
