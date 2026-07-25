@@ -1470,7 +1470,12 @@ func (m model) viewEpicDupWarn() string {
 
 func (m model) viewCreating() string {
 	title := titleStyle.Render("Creating Tickets")
-	bar := progressBar(44, m.progress) + fmt.Sprintf("  %d%%", int(m.progress*100))
+	w := clamp(m.width-8, 60, 84)
+	barWidth := w - 14 // panel border (2) + padding (4) + "  100%" (6) + margin (2)
+	if barWidth < 20 {
+		barWidth = 20
+	}
+	bar := progressBar(barWidth, m.progress) + fmt.Sprintf("  %d%%", int(m.progress*100))
 
 	var rows []string
 
@@ -1508,7 +1513,6 @@ func (m model) viewCreating() string {
 		rows = append(rows, "  "+status+"  "+truncate(t.Title, 42))
 	}
 
-	w := clamp(m.width-8, 60, 84)
 	body := lipgloss.JoinVertical(lipgloss.Left,
 		title, "", bar, "", strings.Join(rows, "\n"))
 
