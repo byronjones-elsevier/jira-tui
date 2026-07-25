@@ -187,7 +187,7 @@ SQLite local reads/writes are sub-millisecond. Wrapping them in `tea.Cmd` gorout
 ### UX limitations
 
 - **No back-navigation from `screenSettings` or `screenTickets`.** Pressing Esc on either screen does nothing; the only way to reselect a board or change issue type is to restart. **Fixed in code** (Esc → screenBoards from Settings; Esc → screenSettings from Tickets).
-- **`screenDone` exits on any keypress.** Pressing an arrow key while reading results quits immediately; the done view has no scrolling even when ticket count overflows the panel.
+- **`screenDone` exits on any keypress.** Pressing an arrow key while reading results quits immediately; the done view has no scrolling even when ticket count overflows the panel. **Fixed in code** (only q/Esc/Enter quit; ↑↓/jk/PgUp/PgDn scroll the results list).
 - **No way to open a URL.** Done view and history view display Jira URLs as plain text with no keybinding to open them in a browser.
 - **No retry for failed tickets.** A transient API error requires a full restart; there is no "retry failed" option.
 - **Assignee resolution failure is silent.** A network error during `ResolveAccountID` is treated as "user not found" — the ticket is created without an assignee with a success checkmark.

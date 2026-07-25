@@ -136,6 +136,9 @@ type model struct {
 	dupItems  []dupCheckItem
 	dupCursor int
 
+	// Done (screenDone)
+	doneOffset int
+
 	// Show tickets (screenShowTickets)
 	histRecords []TicketRecord
 	histCursor  int
@@ -504,9 +507,68 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case screenShowTickets:
 		return m.handleShowTicketsKey(msg)
 	case screenDone:
-		return m, tea.Quit
+		return m.handleDoneKey(msg)
 	}
 	return m, nil
+}
+
+// ── Done keys ─────────────────────────────────────────────────────────────────
+
+func (m model) handleDoneKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "q", "esc", "enter":
+		return m, tea.Quit
+	case "up", "k":
+		if m.doneOffset > 0 {
+			m.doneOffset--
+		}
+	case "down", "j":
+		if m.doneOffset < m.doneMaxOffset() {
+			m.doneOffset++
+		}
+	case "pgup", "ctrl+b":
+		m.doneOffset -= m.donePageSize()
+		if m.doneOffset < 0 {
+			m.doneOffset = 0
+		}
+	case "pgdown", "ctrl+f":
+		m.doneOffset += m.donePageSize()
+		if max := m.doneMaxOffset(); m.doneOffset > max {
+			m.doneOffset = max
+		}
+	}
+	return m, nil
+}
+
+func (m model) donePageSize() int {
+	n := m.height - 10
+	if n < 4 {
+		n = 4
+	}
+	return n
+}
+
+func (m model) doneRowCount() int {
+	n := 0
+	if m.mode == modeEpic && m.epicKey != "" {
+		n++
+	}
+	for i, r := range m.results {
+		if !m.selectedTickets[i] {
+			continue
+		}
+		if r.Key != "" || r.Err != nil {
+			n++
+		}
+	}
+	return n
+}
+
+func (m model) doneMaxOffset() int {
+	if max := m.doneRowCount() - m.donePageSize(); max > 0 {
+		return max
+	}
+	return 0
 }
 
 // ── Auth keys ─────────────────────────────────────────────────────────────────
@@ -1457,10 +1519,10 @@ func (m model) viewCreating() string {
 
 func (m model) viewDone() string {
 	created, failed := 0, 0
-	var rows []string
+	var allRows []string
 
 	if m.mode == modeEpic && m.epicKey != "" {
-		rows = append(rows,
+		allRows = append(allRows,
 			successStyle.Render("✓")+" "+
 				labelStyle.Render("EPIC")+" "+
 				dimStyle.Render(fmt.Sprintf("%-12s", m.epicKey))+" "+m.epicURL)
@@ -1472,11 +1534,11 @@ func (m model) viewDone() string {
 		}
 		if r.Key != "" {
 			created++
-			rows = append(rows, successStyle.Render("✓")+" "+
+			allRows = append(allRows, successStyle.Render("✓")+" "+
 				dimStyle.Render(fmt.Sprintf("%-12s", r.Key))+" "+r.URL)
 		} else if r.Err != nil {
 			failed++
-			rows = append(rows, errorStyle.Render("✗")+" "+
+			allRows = append(allRows, errorStyle.Render("✗")+" "+
 				truncate(r.Ticket.Title, 36)+"  "+dimStyle.Render(r.Err.Error()))
 		}
 	}
@@ -1488,13 +1550,33 @@ func (m model) viewDone() string {
 	summary := fmt.Sprintf("Created: %s   Failed: %s",
 		successStyle.Render(fmt.Sprintf("%d", created)), failStr)
 
-	footer := footerStyle.Width(54).Render("Any key to exit")
-
-	body := lipgloss.JoinVertical(lipgloss.Left,
-		titleStyle.Render("✓ Done"), "", summary, "",
-		strings.Join(rows, "\n"), "", footer)
-
 	w := clamp(m.width-8, 60, 90)
+
+	ps := m.donePageSize()
+	end := m.doneOffset + ps
+	if end > len(allRows) {
+		end = len(allRows)
+	}
+	visible := allRows[m.doneOffset:end]
+
+	var scrollHint string
+	if m.doneOffset > 0 && end < len(allRows) {
+		scrollHint = dimStyle.Render("  ↑ more above  ·  ↓ more below")
+	} else if m.doneOffset > 0 {
+		scrollHint = dimStyle.Render("  ↑ more above")
+	} else if end < len(allRows) {
+		scrollHint = dimStyle.Render("  ↓ more below")
+	}
+
+	footer := footerStyle.Width(w).Render("↑↓/jk scroll  •  q / Esc / Enter to exit")
+
+	parts := []string{titleStyle.Render("✓ Done"), "", summary, "", strings.Join(visible, "\n")}
+	if scrollHint != "" {
+		parts = append(parts, scrollHint)
+	}
+	parts = append(parts, "", footer)
+
+	body := lipgloss.JoinVertical(lipgloss.Left, parts...)
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center,
 		panelStyle.Width(w).Render(body))
 }
