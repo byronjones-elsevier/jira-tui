@@ -28,7 +28,7 @@ The program has five modes, selected at launch via flags:
 | `--create-epic` / `-ce` | `modeEpic` | Same flow but inserts Epic Setup screen; tickets become children of the created epic |
 | `--show-tickets` / `-st` | `modeShow` | Skips Jira auth entirely; loads local history from SQLite and displays it |
 | `--create-ticket` / `-ct` | `modeManual` | Auth → board → manual form (title/desc/assignee/labels/type) → create; if Epic, loops to offer subtask creation |
-| `--create-csv-from-epic <KEY>` / `-ccfe <KEY>` | `modeEpicToCSV` | Auth → query epic by key → review children → choose save path → write CSV |
+| `--create-csv-from-epic <KEY>` / `-ccfe <KEY>` | `modeEpicToCSV` | Auth → query ticket by key → review children → choose save path → write CSV |
 
 ## Screen state machine
 
@@ -174,12 +174,12 @@ Legacy locations (`~/.jira_config`, `~/.jira_boards_cache.json`) are read as a f
 
 All calls use HTTP Basic auth (`email:apiToken`).
 
-### Epic child-issue discovery
+### Child-issue discovery (`GetEpicChildren`)
 
-`GetEpicChildren` runs two JQL queries in sequence:
+`GetEpicChildren` works for any issue type that has children (epics, stories, tasks, etc.) and runs two JQL queries in sequence:
 
-1. `parent = "EPIC-KEY"` — works for team-managed (Next-gen) Jira Cloud projects and modern classic projects.
-2. `"Epic Link" = "EPIC-KEY"` — fallback for older classic Jira Cloud configurations where children reference the epic via a custom field rather than a parent link. Only attempted if the first query returns 0 results.
+1. `parent = "KEY"` — works for team-managed (Next-gen) Jira Cloud projects and modern classic projects.
+2. `"Epic Link" = "KEY"` — fallback for older classic Jira Cloud configurations where children reference the parent via a custom field rather than a parent link. Only attempted if the first query returns 0 results.
 
 ### Description field handling (`IssueDescription`)
 

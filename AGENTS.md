@@ -50,7 +50,7 @@ make test
 | `-ce` / `--create-epic` | `modeEpic` | Same + Epic Setup screen; tickets become children of the new epic |
 | `-ct` / `--create-ticket` | `modeManual` | Auth → board → manual form → create; if Epic type, loops to add subtasks |
 | `-st` / `--show-tickets` | `modeShow` | Local SQLite history only; no network |
-| `-ccfe <KEY>` / `--create-csv-from-epic <KEY>` | `modeEpicToCSV` | Auth → query epic → review children → save CSV |
+| `-ccfe <KEY>` / `--create-csv-from-epic <KEY>` | `modeEpicToCSV` | Auth → query ticket (any type with children) → review children → save CSV |
 | `-pk <KEY>` / `--project-key <KEY>` | _(flag, any mode)_ | Skip board picker; sets `m.projectKey` directly |
 
 ## Screen state machine
@@ -85,7 +85,7 @@ screenDone                      // results summary
 screenShowTickets               // history browser (--show-tickets)
 screenManualEntry               // single-ticket form (--create-ticket)
 screenManualContinue            // "add a subtask?" prompt (after Epic creation)
-screenEpicCSVQuery              // epic fetch spinner + error state
+screenEpicCSVQuery              // ticket fetch spinner + error state
 screenEpicCSVReview             // scrollable child issue list
 screenEpicCSVPath               // file-path text input
 ```
@@ -128,6 +128,6 @@ Unit tests in `*_test.go` alongside source. Use `go test ./...`.
 
 - `bubbles/spinner` uses `spinner.Dot` (singular), not `spinner.Dots`.
 - Description field is `json.RawMessage` — Jira v2 returns a plain string; v3 returns ADF JSON. `IssueDescription()` handles both.
-- `GetEpicChildren` tries `parent = KEY` first, then falls back to `"Epic Link" = KEY` for classic projects.
+- `GetEpicChildren` works for any issue type with children; tries `parent = KEY` first, then falls back to `"Epic Link" = KEY` for classic projects.
 - `createCSVFromEpic` saves to the **current working directory**, not `~/.jira-tui/`.
 - Config is saved atomically: write to temp file, then `os.Rename` — prevents credential loss on crash.

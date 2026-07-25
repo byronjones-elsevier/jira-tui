@@ -18,7 +18,7 @@ An interactive terminal UI for creating Jira tickets.
 - **Interactive ticket entry** — fill in a form for a single ticket with no CSV needed
 - **Epic mode** — create an epic then link all CSV rows as child tickets
 - **Epic + subtask loop** — create an epic interactively, then add as many subtasks as you like
-- **Epic → CSV export** — query an existing epic and export its child issues to a reusable CSV file
+- **Ticket → CSV export** — query any ticket with children (epics, stories, tasks, etc.) and export its child issues to a reusable CSV file
 - **Duplicate detection** — checks local history before creating; prompts to skip or create anyway
 - **Retry failed tickets** — re-create only the tickets that errored, without restarting
 - **Ticket history** — every created ticket is stored in a local SQLite DB; browse with `--show-tickets`
@@ -40,7 +40,7 @@ make build                                      # or: go build -o jira-tui .
 ./jira-tui my-tickets.csv                       # specify a CSV file
 ./jira-tui --create-epic tickets.csv            # create an epic + child tickets
 ./jira-tui --create-ticket                      # interactively enter a single ticket
-./jira-tui --create-csv-from-epic PROJ-123      # export epic children to PROJ-123.csv
+./jira-tui --create-csv-from-epic PROJ-123      # export child issues to PROJ-123.csv
 ./jira-tui --show-tickets                       # browse previously created tickets
 ./jira-tui --project-key MYPROJ                 # skip board picker
 ./jira-tui --help                               # show all options and env vars
@@ -78,7 +78,7 @@ Opens a browsable list of all previously created tickets from the local SQLite h
 
 ### `--create-csv-from-epic` / `-ccfe <KEY>`
 
-Queries the given Jira issue key, confirms it is an **Epic**, then fetches all child issues and presents them in a scrollable review screen. After confirming, enter a file path (default: `<KEY>.csv`) and press **Enter** to write the CSV.
+Queries the given Jira issue key and fetches all child issues, then presents them in a scrollable review screen. Works for any issue type that has children — epics, stories, tasks, etc. After confirming, enter a file path (default: `<KEY>.csv`) and press **Enter** to write the CSV.
 
 **Output columns:** `Title`, `Description`, `Assignee`, `Labels`, `Requester`
 
