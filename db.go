@@ -25,6 +25,7 @@ type TicketRecord struct {
 	ProjectKey  string
 	Assignee    string
 	Labels      []string
+	Status      string   // current workflow status (e.g. "To Do", "In Progress", "Done")
 }
 
 // appDirOverride, when non-empty, replaces the default ~/.jira-tui path.
@@ -89,7 +90,7 @@ func openDB() (*sql.DB, error) {
 
 // currentSchemaVersion is the schema version this build expects.
 // Bump this and add a migration step in migrateDB whenever the schema changes.
-const currentSchemaVersion = 1
+const currentSchemaVersion = 2
 
 func migrateDB(db *sql.DB) error {
 	// Schema-version table — created unconditionally; safe on first open.
@@ -126,6 +127,12 @@ func migrateDB(db *sql.DB) error {
 		}
 	}
 
+	if version < 2 {
+		if _, err := db.Exec(`ALTER TABLE tickets ADD COLUMN status TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("migration 2 — add status column: %w", err)
+		}
+	}
+
 	// Write the current version (no-op if already up to date).
 	if version < currentSchemaVersion {
 		if _, err := db.Exec(`DELETE FROM schema_version`); err != nil {
@@ -151,17 +158,17 @@ func insertTicket(db *sql.DB, r TicketRecord) error {
 	}
 	_, err = db.Exec(
 		`INSERT INTO tickets
-		 (title, description, jira_key, url, created_at, ticket_type, parent_key, parent_url, project_key, assignee, labels)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 (title, description, jira_key, url, created_at, ticket_type, parent_key, parent_url, project_key, assignee, labels, status)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.Title, r.Description, r.JiraKey, r.URL,
 		r.CreatedAt.UTC().Format(time.RFC3339),
 		r.TicketType, r.ParentKey, r.ParentURL,
-		r.ProjectKey, r.Assignee, string(labels),
+		r.ProjectKey, r.Assignee, string(labels), r.Status,
 	)
 	return err
 }
 
-const selectCols = `id, title, description, jira_key, url, created_at, ticket_type, parent_key, parent_url, project_key, assignee, labels`
+const selectCols = `id, title, description, jira_key, url, created_at, ticket_type, parent_key, parent_url, project_key, assignee, labels, status`
 
 func scanTickets(rows *sql.Rows) ([]TicketRecord, error) {
 	defer rows.Close()
@@ -171,7 +178,7 @@ func scanTickets(rows *sql.Rows) ([]TicketRecord, error) {
 		var labelsJSON, createdAt string
 		if err := rows.Scan(
 			&r.ID, &r.Title, &r.Description, &r.JiraKey, &r.URL, &createdAt,
-			&r.TicketType, &r.ParentKey, &r.ParentURL, &r.ProjectKey, &r.Assignee, &labelsJSON,
+			&r.TicketType, &r.ParentKey, &r.ParentURL, &r.ProjectKey, &r.Assignee, &labelsJSON, &r.Status,
 		); err != nil {
 			return nil, err
 		}
@@ -213,6 +220,12 @@ func findEpicsByTitle(db *sql.DB, title string) ([]TicketRecord, error) {
 // deleteTicket removes a single history record by ID.
 func deleteTicket(db *sql.DB, id int64) error {
 	_, err := db.Exec(`DELETE FROM tickets WHERE id = ?`, id)
+	return err
+}
+
+// updateTicketStatus sets the status column for a single history record.
+func updateTicketStatus(db *sql.DB, id int64, status string) error {
+	_, err := db.Exec(`UPDATE tickets SET status = ? WHERE id = ?`, status, id)
 	return err
 }
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -52,6 +53,12 @@ type User struct {
 	AccountID   string `json:"accountId"`
 	DisplayName string `json:"displayName"`
 	Email       string `json:"emailAddress"`
+}
+
+// Transition represents a Jira workflow transition.
+type Transition struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
 }
 
 // Board is a Jira agile board with its resolved project key.
@@ -395,6 +402,45 @@ func (c *JiraClient) DeleteIssue(key string) error {
 	if err != nil {
 		return err
 	}
+	req.SetBasicAuth(c.email, c.token)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
+	}
+	return nil
+}
+
+// GetTransitions returns the available workflow transitions for a Jira issue.
+func (c *JiraClient) GetTransitions(key string) ([]Transition, error) {
+	data, err := c.get("/rest/api/2/issue/" + url.PathEscape(key) + "/transitions")
+	if err != nil {
+		return nil, err
+	}
+	var result struct {
+		Transitions []Transition `json:"transitions"`
+	}
+	return result.Transitions, json.Unmarshal(data, &result)
+}
+
+// TransitionIssue moves a Jira issue to a new workflow state by transition ID.
+func (c *JiraClient) TransitionIssue(key, transitionID string) error {
+	path := c.baseURL + "/rest/api/2/issue/" + url.PathEscape(key) + "/transitions"
+	payload, err := json.Marshal(map[string]any{
+		"transition": map[string]string{"id": transitionID},
+	})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequest("POST", path, bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
 	req.SetBasicAuth(c.email, c.token)
 	resp, err := c.http.Do(req)
 	if err != nil {

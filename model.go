@@ -98,6 +98,18 @@ type jiraDeleteMsg struct {
 	err      error
 }
 
+type transitionsLoadedMsg struct {
+	transitions   []Transition
+	currentStatus string
+	err           error
+}
+
+type transitionAppliedMsg struct {
+	recordID int64
+	status   string
+	err      error
+}
+
 // ── dupCheckItem holds a ticket whose title+description matches a history record. ─
 
 type dupCheckItem struct {
@@ -206,6 +218,13 @@ type model struct {
 	histConfirmDelete     bool  // true while waiting for y/n on local-only delete
 	histConfirmDeleteJira bool  // true while waiting for y/n on Jira + local delete
 	histJiraDeleteErr     error // set when a Jira delete fails
+
+	histTransitions       []Transition // available transitions for the selected ticket
+	histTransitionCursor  int
+	histTransitionActive  bool         // true while the transition picker is shown
+	histTransitionLoading bool         // true while fetching transitions
+	histTransitionErr     error
+	histTransitionCurrent string       // current status name fetched from Jira
 
 	// UI helpers
 	spinner    spinner.Model
@@ -469,6 +488,54 @@ func (m model) cmdCreateManualTicket(t Ticket, issueType, parentKey string) tea.
 			url = client.baseURL + "/browse/" + key
 		}
 		return manualTicketCreatedMsg{key: key, url: url, ticket: t, issueType: issueType, err: err, assigneeWarn: assigneeWarn}
+	}
+}
+
+func (m model) cmdGetTransitions(key string) tea.Cmd {
+	client := m.client
+	cfg := m.config
+	return func() tea.Msg {
+		c := client
+		if c == nil {
+			if cfg.BaseURL == "" || cfg.Email == "" || cfg.APIToken == "" {
+				return transitionsLoadedMsg{err: fmt.Errorf("no Jira credentials configured")}
+			}
+			c = newJiraClient(cfg.BaseURL, cfg.Email, cfg.APIToken)
+			c.useADF = cfg.UseADF
+		}
+		issue, err := c.GetIssue(key)
+		if err != nil {
+			return transitionsLoadedMsg{err: fmt.Errorf("fetch issue: %w", err)}
+		}
+		transitions, err := c.GetTransitions(key)
+		if err != nil {
+			return transitionsLoadedMsg{err: fmt.Errorf("fetch transitions: %w", err)}
+		}
+		return transitionsLoadedMsg{
+			transitions:   transitions,
+			currentStatus: issue.Fields.Status.Name,
+		}
+	}
+}
+
+func (m model) cmdTransitionIssue(key, transitionID, statusName string, recordID int64) tea.Cmd {
+	client := m.client
+	cfg := m.config
+	db := m.db
+	return func() tea.Msg {
+		c := client
+		if c == nil {
+			if cfg.BaseURL == "" || cfg.Email == "" || cfg.APIToken == "" {
+				return transitionAppliedMsg{err: fmt.Errorf("no Jira credentials configured")}
+			}
+			c = newJiraClient(cfg.BaseURL, cfg.Email, cfg.APIToken)
+			c.useADF = cfg.UseADF
+		}
+		if err := c.TransitionIssue(key, transitionID); err != nil {
+			return transitionAppliedMsg{recordID: recordID, err: err}
+		}
+		_ = updateTicketStatus(db, recordID, statusName)
+		return transitionAppliedMsg{recordID: recordID, status: statusName}
 	}
 }
 
@@ -766,6 +833,31 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.histOffset > maxInt(0, len(m.histRecords)-ps) {
 					m.histOffset = maxInt(0, len(m.histRecords)-ps)
 				}
+				break
+			}
+		}
+		return m, nil
+
+	case transitionsLoadedMsg:
+		m.histTransitionLoading = false
+		if msg.err != nil {
+			m.histTransitionErr = msg.err
+			return m, nil
+		}
+		m.histTransitions = msg.transitions
+		m.histTransitionCurrent = msg.currentStatus
+		m.histTransitionCursor = 0
+		m.histTransitionActive = true
+		return m, nil
+
+	case transitionAppliedMsg:
+		if msg.err != nil {
+			m.histTransitionErr = msg.err
+			return m, nil
+		}
+		for i, r := range m.histRecords {
+			if r.ID == msg.recordID {
+				m.histRecords[i].Status = msg.status
 				break
 			}
 		}
@@ -1853,6 +1945,9 @@ func (m model) handleShowTicketsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Clear any lingering Jira delete error on any keypress.
 	m.histJiraDeleteErr = nil
 
+	// Clear transition error on any keypress.
+	m.histTransitionErr = nil
+
 	filtered := m.histFiltered()
 
 	if m.histConfirmDelete {
@@ -1895,6 +1990,33 @@ func (m model) handleShowTicketsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.histConfirmDeleteJira = false
 		default:
 			m.histConfirmDeleteJira = false
+		}
+		return m, nil
+	}
+
+	if m.histTransitionActive {
+		switch msg.String() {
+		case "up", "k":
+			if m.histTransitionCursor > 0 {
+				m.histTransitionCursor--
+			}
+		case "down", "j":
+			if m.histTransitionCursor < len(m.histTransitions)-1 {
+				m.histTransitionCursor++
+			}
+		case "enter":
+			if len(m.histTransitions) > 0 {
+				t := m.histTransitions[m.histTransitionCursor]
+				filtered := m.histFiltered()
+				if len(filtered) > 0 {
+					rec := filtered[m.histCursor]
+					m.histTransitionActive = false
+					return m, m.cmdTransitionIssue(rec.JiraKey, t.ID, t.Name, rec.ID)
+				}
+			}
+			m.histTransitionActive = false
+		case "esc", "q":
+			m.histTransitionActive = false
 		}
 		return m, nil
 	}
@@ -1970,6 +2092,14 @@ func (m model) handleShowTicketsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Normal (search not focused) key handling.
 	switch msg.String() {
+	case "t":
+		filtered := m.histFiltered()
+		if len(filtered) > 0 {
+			m.histTransitionLoading = true
+			m.histTransitionErr = nil
+			m.histTransitionActive = false
+			return m, m.cmdGetTransitions(filtered[m.histCursor].JiraKey)
+		}
 	case "/":
 		return m, m.histSearch.Focus()
 	case "s":
@@ -2918,6 +3048,20 @@ func (m model) viewShowTickets() string {
 		keyTag := keyStyle.Render(r.JiraKey)
 		date := dimStyle.Render(r.CreatedAt.Format("2006-01-02"))
 
+		var statusTag string
+		var statusVisual int
+		if r.Status != "" {
+			st := truncate(r.Status, 10)
+			statusTag = dimStyle.Render("[" + st + "]")
+			statusVisual = 2 + len([]rune(st)) // "[" + status + "]"
+		}
+
+		statusPart := ""
+		if statusTag != "" {
+			statusPart = "  " + statusTag
+			statusVisual += 2 // account for "  " separator
+		}
+
 		parent := ""
 		parentVisual := 0
 		if r.ParentKey != "" {
@@ -2926,12 +3070,12 @@ func (m model) viewShowTickets() string {
 		}
 
 		typeVisual := len([]rune(truncate(r.TicketType, 8)))
-		fixedUsed := 2 + 10 + 2 + len([]rune(r.JiraKey)) + 2 + typeVisual + 2 + parentVisual
+		fixedUsed := 2 + 10 + 2 + len([]rune(r.JiraKey)) + 2 + typeVisual + statusVisual + 2 + parentVisual
 		maxTitle := (w - 6) - fixedUsed
 		if maxTitle < 10 {
 			maxTitle = 10
 		}
-		row := cur + date + "  " + keyTag + "  " + typeTag + "  " + parent + nameStyle.Render(truncate(r.Title, maxTitle))
+		row := cur + date + "  " + keyTag + "  " + typeTag + statusPart + "  " + parent + nameStyle.Render(truncate(r.Title, maxTitle))
 		rows = append(rows, row)
 	}
 
@@ -2954,6 +3098,26 @@ func (m model) viewShowTickets() string {
 		parts = append(parts, scrollHint)
 	}
 
+	if m.histTransitionLoading {
+		parts = append(parts, "", dimStyle.Render("  Fetching transitions…"))
+	} else if m.histTransitionActive && len(m.histTransitions) > 0 {
+		var tlines []string
+		tlines = append(tlines, subtitleStyle.Render(fmt.Sprintf("Update status — current: %s", m.histTransitionCurrent)))
+		tlines = append(tlines, "")
+		for i, t := range m.histTransitions {
+			if i == m.histTransitionCursor {
+				tlines = append(tlines, cursorStyle.Render("▶ ")+selectedItemStyle.Render(t.Name))
+			} else {
+				tlines = append(tlines, "  "+t.Name)
+			}
+		}
+		tlines = append(tlines, "")
+		tlines = append(tlines, dimStyle.Render("Enter to apply  •  Esc to cancel"))
+		parts = append(parts, "", strings.Join(tlines, "\n"))
+	} else if m.histTransitionErr != nil {
+		parts = append(parts, errorStyle.Render("Transition error: "+m.histTransitionErr.Error()))
+	}
+
 	var footerText string
 	if m.histConfirmDelete && len(filtered) > 0 {
 		rec := filtered[m.histCursor]
@@ -2963,10 +3127,14 @@ func (m model) viewShowTickets() string {
 		footerText = errorStyle.Render(fmt.Sprintf("Delete %s from Jira AND local? (y/N)", rec.JiraKey))
 	} else if m.histJiraDeleteErr != nil {
 		footerText = errorStyle.Render("Jira delete failed: " + m.histJiraDeleteErr.Error())
+	} else if m.histTransitionActive {
+		footerText = "Enter apply  •  ↑↓/jk navigate  •  Esc cancel"
+	} else if m.histTransitionLoading {
+		footerText = dimStyle.Render("Fetching transitions from Jira…")
 	} else if m.histSearch.Focused() {
 		footerText = "Type to filter  •  Enter to browse results  •  Esc clear / quit"
 	} else {
-		footerText = "↑↓/jk navigate  •  / filter  •  s sort  •  S reverse  •  o open URL  •  d local  •  D Jira delete  •  q / Esc quit"
+		footerText = "↑↓/jk navigate  •  / filter  •  s sort  •  S reverse  •  t status  •  o open  •  d local  •  D Jira delete  •  q quit"
 	}
 	parts = append(parts, footerStyle.Width(w).Render(footerText))
 
