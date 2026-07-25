@@ -22,7 +22,7 @@ An interactive terminal UI for creating Jira tickets.
 - **Duplicate detection** — checks local history before creating; prompts to skip or create anyway
 - **Retry failed tickets** — re-create only the tickets that errored, without restarting
 - **Ticket history** — every created ticket is stored in a local SQLite DB; browse with `--show-tickets`
-- **Status tracking** — ticket status stored in local DB; press `t` in history view to fetch Jira workflow transitions and update status in one step
+- **Status tracking** — ticket status stored in local DB; press `t` in history view to fetch Jira workflow transitions and update status in one step; press `R` to bulk-refresh status for all tickets at once
 - **Delete history records** — remove stale or test entries from the history view
 - **Board search** — filter and select the target Jira project from a searchable board list
 - **Board cache** — board list cached locally; configurable TTL with background refresh
@@ -168,6 +168,7 @@ Add dark mode,Implement dark theme support,,feature;ui
 | `s` | Cycle sort field: Date → Key → Title → Type → Date |
 | `S` | Reverse sort direction on the current field |
 | `t` | Update ticket status — fetches available Jira workflow transitions, shows picker, applies on Enter |
+| `R` | Refresh status for ALL tickets in bulk — queries Jira in batches of 50, writes results to local DB |
 | `o` | Open selected ticket URL in browser |
 | `d` | Delete local record only (prompts for confirmation) |
 | `D` | Delete from Jira AND local history (prompts for confirmation; requires "Delete Issues" permission) |

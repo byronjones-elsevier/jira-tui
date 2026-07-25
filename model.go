@@ -110,6 +110,11 @@ type transitionAppliedMsg struct {
 	err      error
 }
 
+type bulkStatusMsg struct {
+	statuses map[string]string // JiraKey → current status name
+	err      error
+}
+
 // ── dupCheckItem holds a ticket whose title+description matches a history record. ─
 
 type dupCheckItem struct {
@@ -225,6 +230,9 @@ type model struct {
 	histTransitionLoading bool         // true while fetching transitions
 	histTransitionErr     error
 	histTransitionCurrent string       // current status name fetched from Jira
+
+	histStatusRefreshing bool   // true while bulk status fetch is in flight
+	histStatusRefreshMsg string // result shown in footer after bulk refresh
 
 	// UI helpers
 	spinner    spinner.Model
@@ -556,6 +564,56 @@ func (m model) cmdDeleteJiraIssue(key string, recordID int64) tea.Cmd {
 	}
 }
 
+func (m model) cmdRefreshAllStatuses() tea.Cmd {
+	client := m.client
+	cfg := m.config
+	db := m.db
+	// Capture keys and ID map so the goroutine can write to DB without touching model state.
+	idMap := make(map[string]int64, len(m.histRecords))
+	keys := make([]string, 0, len(m.histRecords))
+	for _, r := range m.histRecords {
+		idMap[r.JiraKey] = r.ID
+		keys = append(keys, r.JiraKey)
+	}
+	return func() tea.Msg {
+		c := client
+		if c == nil {
+			if cfg.BaseURL == "" || cfg.Email == "" || cfg.APIToken == "" {
+				return bulkStatusMsg{err: fmt.Errorf("no Jira credentials configured")}
+			}
+			c = newJiraClient(cfg.BaseURL, cfg.Email, cfg.APIToken)
+			c.useADF = cfg.UseADF
+		}
+		statuses := make(map[string]string, len(keys))
+		const batchSize = 50
+		for i := 0; i < len(keys); i += batchSize {
+			end := i + batchSize
+			if end > len(keys) {
+				end = len(keys)
+			}
+			batch := keys[i:end]
+			quoted := make([]string, len(batch))
+			for j, k := range batch {
+				quoted[j] = `"` + k + `"`
+			}
+			jql := `key in (` + strings.Join(quoted, ", ") + `)`
+			issues, err := c.searchIssues(jql, "status")
+			if err != nil {
+				continue // non-fatal; remaining batches still run
+			}
+			for _, issue := range issues {
+				statuses[issue.Key] = issue.Fields.Status.Name
+			}
+		}
+		for key, status := range statuses {
+			if id, ok := idMap[key]; ok {
+				_ = updateTicketStatus(db, id, status)
+			}
+		}
+		return bulkStatusMsg{statuses: statuses}
+	}
+}
+
 func (m model) cmdLoadHistory() tea.Cmd {
 	db := m.db
 	return func() tea.Msg {
@@ -861,6 +919,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				break
 			}
 		}
+		return m, nil
+
+	case bulkStatusMsg:
+		m.histStatusRefreshing = false
+		if msg.err != nil {
+			m.histStatusRefreshMsg = "Error: " + msg.err.Error()
+			return m, nil
+		}
+		count := 0
+		for i, r := range m.histRecords {
+			if status, ok := msg.statuses[r.JiraKey]; ok && status != "" {
+				m.histRecords[i].Status = status
+				count++
+			}
+		}
+		m.histStatusRefreshMsg = fmt.Sprintf("Refreshed status for %d of %d tickets", count, len(m.histRecords))
 		return m, nil
 	}
 
@@ -1942,11 +2016,10 @@ func (m model) handleShowTicketsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Clear any lingering Jira delete error on any keypress.
+	// Clear transient one-line messages on any keypress.
 	m.histJiraDeleteErr = nil
-
-	// Clear transition error on any keypress.
 	m.histTransitionErr = nil
+	m.histStatusRefreshMsg = ""
 
 	filtered := m.histFiltered()
 
@@ -2131,6 +2204,12 @@ func (m model) handleShowTicketsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if len(filtered) > 0 {
 			m.histConfirmDeleteJira = true
 			m.histConfirmDelete = false
+		}
+	case "R":
+		if !m.histStatusRefreshing && len(m.histRecords) > 0 {
+			m.histStatusRefreshing = true
+			m.histStatusRefreshMsg = ""
+			return m, m.cmdRefreshAllStatuses()
 		}
 	case "q", "esc", "enter":
 		return m, tea.Quit
@@ -3131,10 +3210,14 @@ func (m model) viewShowTickets() string {
 		footerText = "Enter apply  •  ↑↓/jk navigate  •  Esc cancel"
 	} else if m.histTransitionLoading {
 		footerText = dimStyle.Render("Fetching transitions from Jira…")
+	} else if m.histStatusRefreshing {
+		footerText = dimStyle.Render(fmt.Sprintf("Refreshing status for %d tickets…", len(m.histRecords)))
+	} else if m.histStatusRefreshMsg != "" {
+		footerText = dimStyle.Render(m.histStatusRefreshMsg)
 	} else if m.histSearch.Focused() {
 		footerText = "Type to filter  •  Enter to browse results  •  Esc clear / quit"
 	} else {
-		footerText = "↑↓/jk navigate  •  / filter  •  s sort  •  S reverse  •  t status  •  o open  •  d local  •  D Jira delete  •  q quit"
+		footerText = "↑↓/jk navigate  •  / filter  •  s sort  •  S reverse  •  t status  •  R refresh all  •  o open  •  d local  •  D Jira delete  •  q quit"
 	}
 	parts = append(parts, footerStyle.Width(w).Render(footerText))
 
