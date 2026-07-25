@@ -48,9 +48,10 @@ type boardsSyncedMsg struct {
 }
 
 type ticketCreatedMsg struct {
-	index int
-	key   string
-	err   error
+	index        int
+	key          string
+	err          error
+	assigneeWarn string // non-empty when requested assignee could not be resolved
 }
 
 type epicCreatedMsg struct {
@@ -294,15 +295,19 @@ func (m model) cmdCreateTicket(index int) tea.Cmd {
 
 	return func() tea.Msg {
 		assigneeID := ""
+		var assigneeWarn string
 		if ticket.Assignee != "" {
-			id, _ := client.ResolveAccountID(ticket.Assignee)
+			id, err := client.ResolveAccountID(ticket.Assignee)
+			if err != nil || id == "" {
+				assigneeWarn = ticket.Assignee
+			}
 			assigneeID = id
 		}
 		if assigneeID == "" && fallback == "requester" {
 			assigneeID = requesterID
 		}
 		key, err := client.CreateIssue(projectKey, issueType, ticket, assigneeID, parentKey)
-		return ticketCreatedMsg{index: index, key: key, err: err}
+		return ticketCreatedMsg{index: index, key: key, err: err, assigneeWarn: assigneeWarn}
 	}
 }
 
@@ -430,10 +435,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case ticketCreatedMsg:
 		result := CreateResult{
-			Ticket: m.tickets[msg.index],
-			Key:    msg.key,
-			URL:    m.config.BaseURL + "/browse/" + msg.key,
-			Err:    msg.err,
+			Ticket:       m.tickets[msg.index],
+			Key:          msg.key,
+			URL:          m.config.BaseURL + "/browse/" + msg.key,
+			Err:          msg.err,
+			AssigneeWarn: msg.assigneeWarn,
 		}
 		m.results[msg.index] = result
 		if msg.err == nil && msg.key != "" {
@@ -1501,6 +1507,9 @@ func (m model) viewCreating() string {
 		r := m.results[i]
 		var status string
 		switch {
+		case r.Key != "" && r.AssigneeWarn != "":
+			status = successStyle.Render(fmt.Sprintf("✓ %-12s", r.Key)) +
+				errorStyle.Render(" !assignee")
 		case r.Key != "":
 			status = successStyle.Render(fmt.Sprintf("✓ %-12s", r.Key))
 		case r.Err != nil:
@@ -1510,7 +1519,7 @@ func (m model) viewCreating() string {
 		default:
 			status = dimStyle.Render("· queued       ")
 		}
-		rows = append(rows, "  "+status+"  "+truncate(t.Title, 42))
+		rows = append(rows, "  "+status+"  "+truncate(t.Title, 36))
 	}
 
 	body := lipgloss.JoinVertical(lipgloss.Left,

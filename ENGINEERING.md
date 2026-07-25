@@ -190,7 +190,7 @@ SQLite local reads/writes are sub-millisecond. Wrapping them in `tea.Cmd` gorout
 - **`screenDone` exits on any keypress.** Pressing an arrow key while reading results quits immediately; the done view has no scrolling even when ticket count overflows the panel. **Fixed in code** (only q/Esc/Enter quit; ↑↓/jk/PgUp/PgDn scroll the results list).
 - **No way to open a URL.** Done view and history view display Jira URLs as plain text with no keybinding to open them in a browser.
 - **No retry for failed tickets.** A transient API error requires a full restart; there is no "retry failed" option.
-- **Assignee resolution failure is silent.** A network error during `ResolveAccountID` is treated as "user not found" — the ticket is created without an assignee with a success checkmark.
+- **Assignee resolution failure is silent.** A network error during `ResolveAccountID` is treated as "user not found" — the ticket is created without an assignee with a success checkmark. **Fixed in code** (`!assignee` warning shown in the creation row when ResolveAccountID returns `""` or errors for a non-empty assignee field).
 - **Progress bar width hardcoded at 44 chars** (`viewCreating`). Does not adapt to terminal width. **Fixed in code** (bar width derived from `m.width` via panel width formula).
 - **`screenCreating` is uninterruptible.** Once creation begins there is no pause or abort; Ctrl+C kills the process but leaves in-flight API calls (20 s timeout) running in background goroutines.
 - **`m.err` is never cleared on `screenBoards`.** An error from a failed board load persists in the view after the user begins interacting. **Fixed in code** (cleared at the start of every `handleBoardsKey` call).

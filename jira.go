@@ -34,11 +34,12 @@ type Board struct {
 
 // CreateResult holds the outcome of a single ticket creation.
 type CreateResult struct {
-	Ticket  Ticket
-	Key     string // e.g. "FINOPS-7"
-	URL     string
-	Skipped bool
-	Err     error
+	Ticket       Ticket
+	Key          string // e.g. "FINOPS-7"
+	URL          string
+	Skipped      bool
+	Err          error
+	AssigneeWarn string // non-empty when requested assignee could not be resolved
 }
 
 func newJiraClient(baseURL, email, token string) *JiraClient {
