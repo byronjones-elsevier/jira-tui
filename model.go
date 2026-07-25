@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -126,8 +127,10 @@ type model struct {
 	epicPending bool // waiting for epic creation before starting tickets
 
 	// Epic setup (screenEpicSetup)
+	// epicInputs[0]=title, epicInputs[1]=requester; description is epicDescTA.
 	epicInputs    []textinput.Model
-	epicFocus     int
+	epicDescTA    textarea.Model
+	epicFocus     int // 0=title 1=description 2=requester
 	epicTitle     string
 	epicDesc      string
 	epicReq       string
@@ -185,14 +188,19 @@ func newModel(cfg Config, tickets []Ticket, db *sql.DB, mode appMode) model {
 	boardSearch.Placeholder = "Search boards…"
 	boardSearch.CharLimit = 100
 
-	// Epic setup inputs: title, description, requester.
-	epicInps := make([]textinput.Model, 3)
-	for i, ph := range []string{"Epic title", "Description", "Requester name or email"} {
+	// Epic setup inputs: title and requester (description uses a textarea).
+	epicInps := make([]textinput.Model, 2)
+	for i, ph := range []string{"Epic title", "Requester name or email"} {
 		t := textinput.New()
 		t.CharLimit = 256
 		t.Placeholder = ph
 		epicInps[i] = t
 	}
+	epicDesc := textarea.New()
+	epicDesc.Placeholder = "Description (Enter for newlines, Tab to advance)"
+	epicDesc.SetWidth(46)
+	epicDesc.SetHeight(4)
+	epicDesc.CharLimit = 2048
 
 	s := spinner.New()
 	s.Spinner = spinner.Dot
@@ -221,6 +229,7 @@ func newModel(cfg Config, tickets []Ticket, db *sql.DB, mode appMode) model {
 		manualKeyInput:   manualInput,
 		boardSearch:      boardSearch,
 		epicInputs:       epicInps,
+		epicDescTA:       epicDesc,
 		spinner:          s,
 		selectedTickets:  selected,
 		assigneeFallback: af,
@@ -979,53 +988,115 @@ func (m model) firstSelected() int {
 
 // ── Epic setup keys ───────────────────────────────────────────────────────────
 
+const numEpicFields = 3 // title(0), description(1), requester(2)
+
+func (m model) blurCurrentEpicField() model {
+	switch m.epicFocus {
+	case 0:
+		m.epicInputs[0].Blur()
+	case 1:
+		m.epicDescTA.Blur()
+	case 2:
+		m.epicInputs[1].Blur()
+	}
+	return m
+}
+
+func (m model) focusEpicField(i int) (model, tea.Cmd) {
+	m.epicFocus = i
+	switch i {
+	case 0:
+		return m, m.epicInputs[0].Focus()
+	case 1:
+		return m, m.epicDescTA.Focus()
+	case 2:
+		return m, m.epicInputs[1].Focus()
+	}
+	return m, nil
+}
+
 func (m model) handleEpicSetupKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
-	switch msg.String() {
-	case "tab", "down":
-		m.epicInputs[m.epicFocus].Blur()
-		m.epicFocus = (m.epicFocus + 1) % len(m.epicInputs)
-		cmds = append(cmds, m.epicInputs[m.epicFocus].Focus())
 
-	case "shift+tab", "up":
-		m.epicInputs[m.epicFocus].Blur()
-		m.epicFocus = (m.epicFocus - 1 + len(m.epicInputs)) % len(m.epicInputs)
-		cmds = append(cmds, m.epicInputs[m.epicFocus].Focus())
+	switch msg.String() {
+	case "tab":
+		m = m.blurCurrentEpicField()
+		var cmd tea.Cmd
+		m, cmd = m.focusEpicField((m.epicFocus + 1) % numEpicFields)
+		return m, cmd
+
+	case "shift+tab":
+		m = m.blurCurrentEpicField()
+		var cmd tea.Cmd
+		m, cmd = m.focusEpicField((m.epicFocus - 1 + numEpicFields) % numEpicFields)
+		return m, cmd
+
+	case "up", "down":
+		if m.epicFocus == 1 {
+			// Let textarea handle cursor movement within description.
+			var cmd tea.Cmd
+			m.epicDescTA, cmd = m.epicDescTA.Update(msg)
+			return m, cmd
+		}
+		m = m.blurCurrentEpicField()
+		next := m.epicFocus
+		if msg.String() == "down" {
+			next = (m.epicFocus + 1) % numEpicFields
+		} else {
+			next = (m.epicFocus - 1 + numEpicFields) % numEpicFields
+		}
+		var cmd tea.Cmd
+		m, cmd = m.focusEpicField(next)
+		return m, cmd
 
 	case "enter":
-		if m.epicFocus < len(m.epicInputs)-1 {
-			m.epicInputs[m.epicFocus].Blur()
-			m.epicFocus++
-			cmds = append(cmds, m.epicInputs[m.epicFocus].Focus())
-		} else {
-			title := strings.TrimSpace(m.epicInputs[0].Value())
-			if title == "" {
-				m.err = fmt.Errorf("epic title is required")
-				break
-			}
-			m.err = nil
-			m.epicTitle = title
-			m.epicDesc = strings.TrimSpace(m.epicInputs[1].Value())
-			m.epicReq = strings.TrimSpace(m.epicInputs[2].Value())
+		if m.epicFocus == 1 {
+			// Insert newline in the description textarea.
+			var cmd tea.Cmd
+			m.epicDescTA, cmd = m.epicDescTA.Update(msg)
+			return m, cmd
+		}
+		if m.epicFocus < numEpicFields-1 {
+			m = m.blurCurrentEpicField()
+			var cmd tea.Cmd
+			m, cmd = m.focusEpicField(m.epicFocus + 1)
+			return m, cmd
+		}
+		// Submit from requester field.
+		title := strings.TrimSpace(m.epicInputs[0].Value())
+		if title == "" {
+			m.err = fmt.Errorf("epic title is required")
+			break
+		}
+		m.err = nil
+		m.epicTitle = title
+		m.epicDesc = strings.TrimSpace(m.epicDescTA.Value())
+		m.epicReq = strings.TrimSpace(m.epicInputs[1].Value())
 
-			existing, _ := findEpicsByTitle(m.db, title)
-			if len(existing) > 0 {
-				m.existingEpics = existing
-				m.screen = screenEpicDupWarn
-				return m, nil
-			}
-			m.screen = screenTickets
+		existing, _ := findEpicsByTitle(m.db, title)
+		if len(existing) > 0 {
+			m.existingEpics = existing
+			m.screen = screenEpicDupWarn
 			return m, nil
 		}
+		m.screen = screenTickets
+		return m, nil
 
 	case "esc":
-		m.epicInputs[m.epicFocus].Blur()
+		m = m.blurCurrentEpicField()
 		m.screen = screenSettings
 		return m, nil
 
 	default:
 		var cmd tea.Cmd
-		m.epicInputs[m.epicFocus], cmd = m.epicInputs[m.epicFocus].Update(msg)
+		switch m.epicFocus {
+		case 0:
+			m.epicInputs[0], cmd = m.epicInputs[0].Update(msg)
+		case 1:
+			m.epicDescTA, cmd = m.epicDescTA.Update(msg)
+		case 2:
+			m.epicInputs[1], cmd = m.epicInputs[1].Update(msg)
+		}
 		cmds = append(cmds, cmd)
 	}
 	return m, tea.Batch(cmds...)
@@ -1523,15 +1594,27 @@ func (m model) viewDupCheck() string {
 // ── Epic-setup view ───────────────────────────────────────────────────────────
 
 func (m model) viewEpicSetup() string {
-	labels := []string{"Epic Title", "Description", "Requester"}
-	var rows []string
-	for i, inp := range m.epicInputs {
-		style := blurredInputStyle
-		if i == m.epicFocus {
-			style = focusedInputStyle
-		}
-		rows = append(rows, subtitleStyle.Render(labels[i])+"\n"+style.Width(46).Render(inp.View()))
+	// Title field
+	titleStyle2 := blurredInputStyle
+	if m.epicFocus == 0 {
+		titleStyle2 = focusedInputStyle
 	}
+	titleRow := subtitleStyle.Render("Epic Title") + "\n" + titleStyle2.Width(46).Render(m.epicInputs[0].View())
+
+	// Description field (textarea)
+	descBorder := blurredInputStyle
+	if m.epicFocus == 1 {
+		descBorder = focusedInputStyle
+	}
+	descRow := subtitleStyle.Render("Description (Enter for newlines, Tab to advance)") + "\n" +
+		descBorder.Width(46).Render(m.epicDescTA.View())
+
+	// Requester field
+	reqStyle := blurredInputStyle
+	if m.epicFocus == 2 {
+		reqStyle = focusedInputStyle
+	}
+	reqRow := subtitleStyle.Render("Requester") + "\n" + reqStyle.Width(46).Render(m.epicInputs[1].View())
 
 	errLine := ""
 	if m.err != nil {
@@ -1539,13 +1622,15 @@ func (m model) viewEpicSetup() string {
 	}
 
 	footer := footerStyle.Width(54).Render(
-		"Tab/↑↓ move field  •  Enter next/confirm  •  Esc back  •  Ctrl+C quit")
+		"Tab / Shift+Tab move field  •  Enter next/newline  •  Esc back")
 
 	body := lipgloss.JoinVertical(lipgloss.Left,
 		titleStyle.Render("Create Epic"),
 		subtitleStyle.Render(fmt.Sprintf("Project: %s", m.projectKey)),
 		"",
-		strings.Join(rows, "\n\n"),
+		titleRow, "",
+		descRow, "",
+		reqRow,
 		errLine,
 		"",
 		footer,
