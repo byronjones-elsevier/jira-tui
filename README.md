@@ -1,6 +1,11 @@
 # jira-tui
 
-An interactive terminal UI for creating Jira tickets. Supports bulk creation from a CSV file, single-ticket interactive entry, and epic workflows. Built with [Bubbletea](https://github.com/charmbracelet/bubbletea) and [Lipgloss](https://github.com/charmbracelet/lipgloss).
+An interactive terminal UI for creating Jira tickets.
+
+## Built With
+ - [Claude Code](https://claude.ai)
+ - [Bubbletea](https://github.com/charmbracelet/bubbletea)
+ - [Lipgloss](https://github.com/charmbracelet/lipgloss)
 
 ## Features
 
