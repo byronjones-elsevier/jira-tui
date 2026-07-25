@@ -457,10 +457,6 @@ func (m model) cmdQueryEpic() tea.Cmd {
 		if err != nil {
 			return epicQueryMsg{err: fmt.Errorf("fetching %s: %w", key, err)}
 		}
-		if !strings.EqualFold(issue.Fields.IssueType.Name, "Epic") {
-			return epicQueryMsg{err: fmt.Errorf(
-				"%s is not an Epic (issue type: %s)", key, issue.Fields.IssueType.Name)}
-		}
 		children, err := client.GetEpicChildren(key)
 		if err != nil {
 			return epicQueryMsg{err: fmt.Errorf("fetching children of %s: %w", key, err)}
@@ -507,7 +503,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.mode == modeEpicToCSV {
 			m.screen = screenEpicCSVQuery
 			m.loading = true
-			m.loadingMsg = fmt.Sprintf("Querying epic %s…", m.epicCSVKey)
+			m.loadingMsg = fmt.Sprintf("Querying %s…", m.epicCSVKey)
 			return m, m.cmdQueryEpic()
 		}
 
@@ -2696,7 +2692,7 @@ func (m model) viewEpicCSVQuery() string {
 		errLine = errorStyle.Render("⚠  " + m.err.Error())
 	}
 	body := lipgloss.JoinVertical(lipgloss.Left,
-		titleStyle.Render("Epic Query Failed"),
+		titleStyle.Render("Query Failed"),
 		"",
 		errLine,
 		"",
@@ -2710,8 +2706,9 @@ func (m model) viewEpicCSVReview() string {
 	w := clamp(m.width-8, 72, 108)
 	issue := m.epicCSVIssue
 
+	issueTypeLabel := strings.ToUpper(issue.Fields.IssueType.Name)
 	epicHeader := keyStyle.Render(issue.Key) + "  " +
-		labelStyle.Render("EPIC") + "  " +
+		labelStyle.Render(issueTypeLabel) + "  " +
 		titleStyle.Render(truncate(issue.Fields.Summary, w-30))
 
 	childCount := len(m.epicCSVChildren)
@@ -2760,7 +2757,7 @@ func (m model) viewEpicCSVReview() string {
 
 	parts := []string{epicHeader, "", countLine}
 	if childCount == 0 {
-		parts = append(parts, "", dimStyle.Render("No child issues were found for this epic."),
+		parts = append(parts, "", dimStyle.Render("No child issues were found for this ticket."),
 			dimStyle.Render("Team-managed projects use parent= JQL; classic projects use the Epic Link field."))
 	} else {
 		parts = append(parts, "", strings.Join(rows, "\n"))

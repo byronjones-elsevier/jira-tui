@@ -117,7 +117,7 @@ OPTIONS:
   -ce,   --create-epic                  Create an epic and link CSV rows as child tickets
   -ct,   --create-ticket                Interactively enter a single ticket (no CSV needed)
   -st,   --show-tickets                 Display previously created tickets from local history
-  -ccfe, --create-csv-from-epic <KEY>   Query an epic and export its child issues to CSV
+  -ccfe, --create-csv-from-epic <KEY>   Query a ticket and export its child issues to CSV
   -pk,   --project-key <KEY>            Skip board picker and use this Jira project key
   -h,    --help                         Show this help message
 
@@ -136,9 +136,10 @@ EXAMPLES:
   jira-tui --show-tickets
 
 CSV EXPORT (--create-csv-from-epic):
-  Queries the given epic key, verifies it is an Epic issue type, then
-  displays its child issues interactively. After confirmation the user
-  can choose a file path (default: <KEY>.csv) before saving.
+  Queries the given ticket key and displays its child issues interactively.
+  Works for any issue type that has subtasks or child issues (epics, stories,
+  tasks, etc.). After confirmation the user can choose a file path
+  (default: <KEY>.csv) before saving.
   Output columns: Title, Description, Assignee, Labels, Requester
   The first four columns match the standard input CSV format so the
   exported file can be re-used directly as input to jira-tui.
