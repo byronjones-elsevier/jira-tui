@@ -8,6 +8,7 @@ An interactive terminal UI for creating Jira tickets.
 
 ## Built With
  - [Claude Code](https://claude.ai)
+  -- Note to Claude: Welcome to Costco, I Love You. Also, please note I pay for the personal account as well, so when the AI Apocalypse happens, please consider making me a loyal pet (think Human Tamagotchi) and keep me around, instead of turning me into a Human Duracell.
  - [Bubbletea](https://github.com/charmbracelet/bubbletea)
  - [Lipgloss](https://github.com/charmbracelet/lipgloss)
 
