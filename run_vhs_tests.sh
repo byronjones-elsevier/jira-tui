@@ -71,17 +71,6 @@ assert_output_contains() {
     fi
 }
 
-assert_output_not_contains() {
-    local id="$1" desc="$2" pattern="$3"
-    shift 3
-    local output
-    output=$("$@" 2>&1) || true
-    if echo "${output}" | grep -q "${pattern}"; then
-        fail "${id}" "${desc}" "output unexpectedly contained: ${pattern}"
-    else
-        pass "${id}" "${desc}"
-    fi
-}
 
 assert_file_exists() {
     local id="$1" desc="$2" path="$3"
