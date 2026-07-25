@@ -121,20 +121,21 @@ func (c *JiraClient) GetBoards() ([]Board, error) {
 	}
 
 	const pageSize = 50
+	const maxPages = 40
 	var boards []Board
 	startAt := 0
 
-	for {
+	for page := 0; page < maxPages; page++ {
 		path := fmt.Sprintf("/rest/agile/1.0/board?maxResults=%d&startAt=%d", pageSize, startAt)
 		data, err := c.get(path)
 		if err != nil {
 			return nil, err
 		}
-		var page boardPage
-		if err := json.Unmarshal(data, &page); err != nil {
+		var boardPage boardPage
+		if err := json.Unmarshal(data, &boardPage); err != nil {
 			return nil, err
 		}
-		for _, v := range page.Values {
+		for _, v := range boardPage.Values {
 			if v.Location.ProjectKey == "" {
 				continue
 			}
@@ -144,10 +145,10 @@ func (c *JiraClient) GetBoards() ([]Board, error) {
 				ProjectKey: v.Location.ProjectKey,
 			})
 		}
-		if page.IsLast || len(page.Values) == 0 {
+		if boardPage.IsLast || len(boardPage.Values) == 0 {
 			break
 		}
-		startAt += len(page.Values)
+		startAt += len(boardPage.Values)
 	}
 
 	return boards, nil
