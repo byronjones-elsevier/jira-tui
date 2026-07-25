@@ -23,16 +23,16 @@ Set Theme      "Dracula"
 
 # ---------------------------------------------------------------------------
 # GLOBAL SETUP
-# Define th() — the test-header function used throughout this tape.
-# th 'ID' 'Description' renders a gum-styled box with the MANUAL_TESTING.md
-# hierarchy ID and its description before each test step.
+# run_vhs_tests.sh writes th() to /tmp/jira-tui-th.sh before launching VHS
+# so the function definition never has to survive quoting inside a Type string.
+# Sourcing the file is safe: it only contains the single function definition.
 # ---------------------------------------------------------------------------
 Hide
 Type "export JIRA_TUI_DIR=\"$JIRA_TEST_DIR\""
 Enter
 Type "export TEST_CSV=\"$JIRA_TEST_CSV\""
 Enter
-Type "th() { gum style --border rounded --border-foreground 99 --foreground 15 --bold --padding '0 2' --margin '1 0' \"§ $1\" \"$2\"; }"
+Type "source /tmp/jira-tui-th.sh"
 Enter
 Type "clear"
 Enter

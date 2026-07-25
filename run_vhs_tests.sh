@@ -144,6 +144,14 @@ if [[ "${SKIP_VHS}" == "0" ]] && ! command -v vhs &>/dev/null; then
     exit 1
 fi
 
+if [[ "${SKIP_VHS}" == "0" ]] && ! command -v gum &>/dev/null; then
+    red "ERROR: 'gum' not found in PATH (required for test headers in VHS tape)."
+    echo "  Install with:  brew install gum"
+    echo "  Or:            go install github.com/charmbracelet/gum@latest"
+    echo "  Set SKIP_VHS=1 to run only assertion-based tests."
+    exit 1
+fi
+
 # ---------------------------------------------------------------------------
 # Build binary
 # ---------------------------------------------------------------------------
@@ -292,6 +300,24 @@ CSVEOF
     # Create output directory for screenshots and GIF
     mkdir -p "${SCRIPT_DIR}/vhs-output"
     echo "  → Screenshot output dir: ${SCRIPT_DIR}/vhs-output/"
+
+    # Write the th() test-header function to a file so VHS can source it.
+    # Defining it here (not inside a VHS Type string) avoids quoting ambiguity
+    # with the double quotes needed around "§ $1" and "$2" in the gum call.
+    cat > /tmp/jira-tui-th.sh << 'THEOF'
+th() {
+    local id="$1" desc="$2"
+    gum style \
+        --border rounded \
+        --border-foreground 99 \
+        --foreground 15 \
+        --bold \
+        --padding '0 2' \
+        --margin '1 0' \
+        "§ ${id}" "${desc}"
+}
+THEOF
+    echo "  → th() helper written to /tmp/jira-tui-th.sh"
 
     # ---------------------------------------------------------------------------
     # Run VHS
