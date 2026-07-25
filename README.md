@@ -1,27 +1,68 @@
 # jira-tui
 
-An interactive terminal UI for creating Jira tickets from a CSV file. Built with [Bubbletea](https://github.com/charmbracelet/bubbletea) and [Lipgloss](https://github.com/charmbracelet/lipgloss).
+An interactive terminal UI for creating Jira tickets. Supports bulk creation from a CSV file, single-ticket interactive entry, and epic workflows. Built with [Bubbletea](https://github.com/charmbracelet/bubbletea) and [Lipgloss](https://github.com/charmbracelet/lipgloss).
 
 ## Features
 
-- **Bulk ticket creation** from a CSV file with live progress
+- **Bulk ticket creation** from a CSV file with live progress and abort support
+- **Interactive ticket entry** — fill in a form for a single ticket with no CSV needed
 - **Epic mode** — create an epic then link all CSV rows as child tickets
+- **Epic + subtask loop** — create an epic interactively, then add as many subtasks as you like
 - **Duplicate detection** — checks local history before creating; prompts to skip or create anyway
+- **Retry failed tickets** — re-create only the tickets that errored, without restarting
 - **Ticket history** — every created ticket is stored in a local SQLite DB; browse with `--show-tickets`
+- **Delete history records** — remove stale or test entries from the history view
 - **Board search** — filter and select the target Jira project from a searchable board list
-- **Board cache** — board list is cached locally and refreshed in the background
+- **Board cache** — board list cached locally; configurable TTL with background refresh
 - **Persistent credentials** — saved to `~/.jira-tui/config` after first successful login
+- **Env-var credentials** — `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN` override the config file
+- **ADF support** — optionally send descriptions as Atlassian Document Format (REST v3) via `JIRA_USE_ADF=true`
+- **CSV export** — export the results of a creation run to `jira_tickets_results.csv`
+- **URL opener** — press `o` on the done or history screen to open a ticket in the browser
+- **First-run setup** — prompts to create the data directory on first launch
 
 ## Quick start
 
 ```bash
-go build -o jira-tui .
+make build                             # or: go build -o jira-tui .
 ./jira-tui                             # create tickets from jira_tickets.csv
 ./jira-tui my-tickets.csv              # specify a CSV file
 ./jira-tui --create-epic tickets.csv   # create an epic + child tickets
+./jira-tui --create-ticket             # interactively enter a single ticket
 ./jira-tui --show-tickets              # browse previously created tickets
-./jira-tui --help                      # show usage
+./jira-tui --project-key MYPROJ        # skip board picker
+./jira-tui --help                      # show all options and env vars
 ```
+
+## Modes
+
+### Normal mode (default)
+
+Auth → board selection → settings (assignee fallback, issue type) → ticket list → creation → done.
+
+### `--create-epic` / `-ce`
+
+Inserts an **Epic Setup** screen (title, description, requester) between settings and the ticket list. All CSV rows become child issues linked to the new epic.
+
+If an epic with the same title already exists in local history you'll be prompted to confirm before proceeding.
+
+### `--create-ticket` / `-ct`
+
+Skips the CSV entirely. Presents a form with five fields:
+
+| Field | Notes |
+|-------|-------|
+| Title | Required |
+| Description | Multi-line; Enter inserts newlines |
+| Assignee | Email or display name |
+| Labels | Semicolon-separated |
+| Issue Type | Task / Story / Bug / Subtask / Epic |
+
+If you choose **Epic**, a "Add a subtask?" prompt appears after creation. Selecting **Y** resets the form with the parent key pre-set; you can add as many subtasks as you like. **N** or **Esc** goes to the results screen.
+
+### `--show-tickets` / `-st`
+
+Opens a browsable list of all previously created tickets from the local SQLite history. No network access required. Press `d` to delete a record.
 
 ## CSV format
 
@@ -31,67 +72,132 @@ Fix login bug,Users can't log in with SSO,alice@example.com,bug;auth
 Add dark mode,Implement dark theme support,,feature;ui
 ```
 
-- **Title** — required
-- **Description** — optional free text
-- **Assignee** — email or display name (resolved via Jira user search); leave empty for default
-- **Labels** — semicolon-separated; spaces converted to dashes
-
-## Modes
-
-### Normal mode (default)
-
-Walks through: auth → board selection → settings → ticket list → creation → done.
-
-### `--create-epic` / `-ce`
-
-Adds an **Epic Setup** screen (title, description, requester) after the settings screen. CSV rows become child issues linked to the new epic.
-
-If an epic with the same title already exists in local history you'll be asked to confirm before proceeding.
-
-### `--show-tickets` / `-st`
-
-Skips Jira auth entirely and opens a browsable list of all previously created tickets from the local SQLite history. No network access required.
+| Column | Required | Notes |
+|--------|----------|-------|
+| Title | Yes | |
+| Description | No | Free text; multi-line content goes in the CSV cell |
+| Assignee | No | Email or display name; resolved via Jira user search |
+| Labels | No | Semicolon-separated; spaces converted to dashes |
 
 ## Keyboard reference
 
+### Global
+
 | Key | Action |
 |-----|--------|
-| `↑` `↓` / `j` `k` | Navigate lists |
-| `Tab` / `Shift+Tab` | Move between input fields |
-| `Space` | Toggle ticket selection |
-| `a` | Select / deselect all tickets |
-| `Enter` | Confirm / advance to next screen |
-| `Esc` | Go back |
-| `PgUp` / `PgDn` | Jump a page in long lists |
-| `M` | Enter project key manually (board screen) |
-| `R` | Refresh board list |
-| `q` | Quit (history screen) |
 | `Ctrl+C` | Quit at any time |
+| `Esc` | Go back to the previous screen |
 
-## Configuration & data
+### Board screen
 
-All files live in `~/.jira-tui/`:
+| Key | Action |
+|-----|--------|
+| `↑` `↓` / `j` `k` | Navigate board list |
+| `Enter` | Select board |
+| `M` | Enter project key manually |
+| `R` | Force-refresh board list |
+| Type anything | Filter boards by name or project key |
+
+### Ticket list screen
+
+| Key | Action |
+|-----|--------|
+| `↑` `↓` / `j` `k` | Navigate tickets |
+| `Space` | Toggle selection |
+| `a` | Select / deselect all |
+| `Enter` | Start creation |
+| `PgUp` / `PgDn` | Jump a page |
+
+### Creation screen
+
+| Key | Action |
+|-----|--------|
+| `Esc` / `q` | Abort — in-flight ticket finishes, then stops |
+
+### Done screen
+
+| Key | Action |
+|-----|--------|
+| `↑` `↓` / `j` `k` | Scroll results |
+| `o` | Open selected ticket URL in browser |
+| `r` | Retry all failed tickets |
+| `e` | Export results to `jira_tickets_results.csv` |
+| `q` / `Esc` / `Enter` | Quit |
+
+### History screen (`--show-tickets`)
+
+| Key | Action |
+|-----|--------|
+| `↑` `↓` / `j` `k` | Navigate |
+| `o` | Open selected ticket URL in browser |
+| `d` | Delete record (prompts for confirmation) |
+| `q` / `Esc` / `Enter` | Quit |
+
+### Interactive form screen (`--create-ticket`)
+
+| Key | Action |
+|-----|--------|
+| `Tab` / `Shift+Tab` | Move between fields |
+| `Enter` | Insert newline (description) or advance to next field |
+| `←` `→` / `↑` `↓` | Change issue type (when Issue Type field is focused) |
+| `Ctrl+S` | Submit from any field |
+| `Esc` | Back to board picker (if no tickets created yet) or to results |
+
+## Configuration
+
+### Data directory
+
+All files live in `~/.jira-tui/` by default:
 
 | File | Contents |
 |------|----------|
-| `config` | Jira URL, email, API token, defaults |
+| `config` | Jira URL, email, API token, and settings |
 | `history.db` | SQLite — every ticket ever created by this tool |
-| `boards_cache.json` | Cached board list (refreshed on each launch) |
+| `boards_cache.json` | Cached board list |
 
-Legacy locations (`~/.jira_config`, `~/.jira_boards_cache.json`) are read as a fallback if the new directory doesn't exist yet.
+Override the directory: `JIRA_TUI_DIR=/path/to/dir jira-tui`
+
+Legacy locations (`~/.jira_config`, `~/.jira_boards_cache.json`) are read as a fallback if the new directory does not yet exist.
+
+### Config file format
+
+```
+JIRA_BASE_URL="https://yourorg.atlassian.net"
+JIRA_EMAIL="you@example.com"
+JIRA_API_TOKEN="your-token"
+JIRA_ASSIGNEE_FALLBACK_MODE="unassigned"   # or "requester"
+JIRA_ISSUE_TYPE="Task"
+JIRA_BOARD_CACHE_TTL_HOURS="24"
+JIRA_USE_ADF="false"                       # set to true for Jira Cloud ADF descriptions
+```
+
+### Environment variables
+
+All of these override the config file:
+
+| Variable | Description |
+|----------|-------------|
+| `JIRA_BASE_URL` | Jira instance URL |
+| `JIRA_EMAIL` | Atlassian account email |
+| `JIRA_API_TOKEN` | Atlassian API token |
+| `JIRA_TUI_DIR` | Override data directory |
+| `JIRA_BOARD_CACHE_TTL_HOURS` | Board cache lifetime in hours (default: 24) |
+| `JIRA_USE_ADF` | Send descriptions as Atlassian Document Format via REST v3 (`true` / `1`) |
 
 ### Getting a Jira API token
 
 1. Go to <https://id.atlassian.com/manage-profile/security/api-tokens>
 2. Click **Create API token**
-3. Paste it into the API Token field on first launch
+3. Paste it into the API Token field on first launch (or set `JIRA_API_TOKEN`)
 
-## Build
+## Build & development
 
-Requires Go 1.21+.
+Requires Go 1.21+. No CGO — uses `modernc.org/sqlite` (pure Go).
 
 ```bash
-go build -o jira-tui .
+make build    # compile ./jira-tui
+make test     # run unit tests
+make lint     # go vet + shellcheck
+make install  # copy binary to ~/.local/bin
+make run      # build and launch
 ```
-
-No CGO required — uses `modernc.org/sqlite` (pure Go).
