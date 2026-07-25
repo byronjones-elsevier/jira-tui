@@ -74,7 +74,7 @@ If you choose **Epic**, a "Add a subtask?" prompt appears after creation. Select
 
 ### `--show-tickets` / `-st`
 
-Opens a browsable list of all previously created tickets from the local SQLite history. No network access required. Press `d` to delete a record.
+Opens a browsable list of all previously created tickets from the local SQLite history. Press `d` to delete a local record only. Press `D` (shift+d) to delete the ticket from Jira **and** remove it from the local history (requires "Delete Issues" project permission in Jira).
 
 ### `--create-csv-from-epic` / `-ccfe <KEY>`
 
@@ -164,7 +164,8 @@ Add dark mode,Implement dark theme support,,feature;ui
 |-----|--------|
 | `↑` `↓` / `j` `k` | Navigate |
 | `o` | Open selected ticket URL in browser |
-| `d` | Delete record (prompts for confirmation) |
+| `d` | Delete local record only (prompts for confirmation) |
+| `D` | Delete from Jira AND local history (prompts for confirmation; requires "Delete Issues" permission) |
 | `q` / `Esc` / `Enter` | Quit |
 
 ### Interactive form screen (`--create-ticket`)

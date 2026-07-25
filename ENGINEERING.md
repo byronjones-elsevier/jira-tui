@@ -82,6 +82,7 @@ screenDone (any mode, 'e' key):
 | `ticketCreatedMsg` | After `CreateIssue()` | Save to DB; chain next ticket or go to Done |
 | `manualTicketCreatedMsg` | After `cmdCreateManualTicket()` | Save to DB; if Epic → screenManualContinue; else → screenDone |
 | `historyLoadedMsg` | After `allTickets()` | Populate history list |
+| `jiraDeleteMsg` | After `DeleteIssue()` | On success: remove from local DB and list, adjust cursor/offset; on error: set `histJiraDeleteErr` (shown in footer) |
 | `epicQueryMsg` | After `GetIssue` + `GetEpicChildren` | On error: stay on screenEpicCSVQuery with error displayed; on success: → screenEpicCSVReview |
 | `spinner.TickMsg` | Bubbletea ticker | Advance spinner animation |
 
@@ -178,6 +179,7 @@ Legacy locations (`~/.jira_config`, `~/.jira_boards_cache.json`) are read as a f
 | Create epic | Same endpoint switching as above; tries `customfield_10011` (Epic Name), retries without on error |
 | Fetch single issue | `GET /rest/api/2/issue/{key}?fields=summary,description,assignee,reporter,labels,issuetype,status` |
 | Search issues (JQL) | `POST /rest/api/3/search/jql` — JSON body: `{jql, fields[], maxResults, nextPageToken}`; cursor-based pagination via `nextPageToken`; used by `GetEpicChildren` (old `GET /rest/api/2/search` was removed by Atlassian, HTTP 410) |
+| Delete issue | `DELETE /rest/api/2/issue/{key}` — requires "Delete Issues" project permission; used by `--show-tickets` `D` key |
 
 All calls use HTTP Basic auth (`email:apiToken`).
 
@@ -247,7 +249,7 @@ SQLite local reads/writes are sub-millisecond. Wrapping them in `tea.Cmd` gorout
 
 ### Missing features
 
-- **No delete from history.** `viewShowTickets` is read-only; there is no way to remove a stale or test record from `history.db`. **Fixed in code** (`d` key prompts for confirmation; `y` deletes the record; any other key cancels).
+- **No delete from history.** `viewShowTickets` is read-only; there is no way to remove a stale or test record from `history.db`. **Fixed in code** (`d` key prompts for confirmation; `y` deletes the local record only; `D` (shift+d) prompts separately, then calls `DeleteIssue` via the Jira API and removes the local record on success; any other key cancels; Jira delete errors are shown in the footer until the next keypress).
 - **No environment-variable credentials.** `JIRA_BASE_URL`, `JIRA_API_TOKEN`, etc. are only read from the config file; CI/CD pipelines cannot inject credentials without writing a file. (`JIRA_TUI_DIR` for the data directory is supported.) **Fixed in code** (`JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN` env vars now override config file values in `loadConfig`).
 - **No `--project-key` CLI flag.** Board selection is mandatory even when the project key is already known. **Fixed in code** (`-pk`/`--project-key <KEY>` skips board picker; auth still runs to obtain user credentials).
 - **No multi-line description input.** The epic description and ticket descriptions are single-line `textinput` widgets capped at 256 characters; long descriptions must be authored in the CSV. **Fixed in code** (epic description replaced with a `textarea.Model`; Enter inserts newlines, Tab advances to the next field).

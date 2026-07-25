@@ -387,6 +387,27 @@ func (c *JiraClient) CreateEpic(projectKey, title, desc, requester string) (stri
 	return result.Key, json.Unmarshal(data, &result)
 }
 
+// DeleteIssue permanently deletes a Jira issue by key.
+// Requires the "Delete Issues" permission on the project.
+func (c *JiraClient) DeleteIssue(key string) error {
+	path := c.baseURL + "/rest/api/2/issue/" + url.PathEscape(key)
+	req, err := http.NewRequest("DELETE", path, nil)
+	if err != nil {
+		return err
+	}
+	req.SetBasicAuth(c.email, c.token)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
+	}
+	return nil
+}
+
 // GetIssue fetches a single Jira issue by key using the REST v2 API.
 func (c *JiraClient) GetIssue(key string) (*JiraIssue, error) {
 	path := "/rest/api/2/issue/" + url.PathEscape(key) +

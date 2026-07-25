@@ -92,6 +92,11 @@ type epicQueryMsg struct {
 	err      error
 }
 
+type jiraDeleteMsg struct {
+	recordID int64
+	err      error
+}
+
 // ── dupCheckItem holds a ticket whose title+description matches a history record. ─
 
 type dupCheckItem struct {
@@ -194,7 +199,9 @@ type model struct {
 	histCursor        int
 	histOffset        int
 	histLoading       bool
-	histConfirmDelete bool // true while waiting for y/n confirmation
+	histConfirmDelete     bool  // true while waiting for y/n on local-only delete
+	histConfirmDeleteJira bool  // true while waiting for y/n on Jira + local delete
+	histJiraDeleteErr     error // set when a Jira delete fails
 
 	// UI helpers
 	spinner    spinner.Model
@@ -451,6 +458,14 @@ func (m model) cmdCreateManualTicket(t Ticket, issueType, parentKey string) tea.
 			url = client.baseURL + "/browse/" + key
 		}
 		return manualTicketCreatedMsg{key: key, url: url, ticket: t, issueType: issueType, err: err, assigneeWarn: assigneeWarn}
+	}
+}
+
+func (m model) cmdDeleteJiraIssue(key string, recordID int64) tea.Cmd {
+	client := m.client
+	return func() tea.Msg {
+		err := client.DeleteIssue(key)
+		return jiraDeleteMsg{recordID: recordID, err: err}
 	}
 }
 
@@ -711,6 +726,29 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.epicCSVCursor = 0
 		m.epicCSVOffset = 0
 		m.screen = screenEpicCSVReview
+		return m, nil
+
+	case jiraDeleteMsg:
+		m.histLoading = false
+		if msg.err != nil {
+			m.histJiraDeleteErr = msg.err
+			return m, nil
+		}
+		// Jira delete succeeded — remove from local DB and list.
+		_ = deleteTicket(m.db, msg.recordID)
+		for i, r := range m.histRecords {
+			if r.ID == msg.recordID {
+				m.histRecords = append(m.histRecords[:i], m.histRecords[i+1:]...)
+				if m.histCursor >= len(m.histRecords) {
+					m.histCursor = maxInt(0, len(m.histRecords)-1)
+				}
+				ps := m.histPageSize()
+				if m.histOffset > maxInt(0, len(m.histRecords)-ps) {
+					m.histOffset = maxInt(0, len(m.histRecords)-ps)
+				}
+				break
+			}
+		}
 		return m, nil
 	}
 
@@ -1792,6 +1830,9 @@ func (m model) handleShowTicketsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Clear any lingering Jira delete error on any keypress.
+	m.histJiraDeleteErr = nil
+
 	if m.histConfirmDelete {
 		switch msg.String() {
 		case "y", "Y":
@@ -1803,14 +1844,29 @@ func (m model) handleShowTicketsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					m.histCursor = maxInt(0, len(m.histRecords)-1)
 				}
 				ps := m.histPageSize()
-				maxOff := maxInt(0, len(m.histRecords)-ps)
-				if m.histOffset > maxOff {
-					m.histOffset = maxOff
+				if m.histOffset > maxInt(0, len(m.histRecords)-ps) {
+					m.histOffset = maxInt(0, len(m.histRecords)-ps)
 				}
 			}
 			m.histConfirmDelete = false
 		default:
 			m.histConfirmDelete = false
+		}
+		return m, nil
+	}
+
+	if m.histConfirmDeleteJira {
+		switch msg.String() {
+		case "y", "Y":
+			if len(m.histRecords) > 0 {
+				rec := m.histRecords[m.histCursor]
+				m.histConfirmDeleteJira = false
+				m.histLoading = true
+				return m, m.cmdDeleteJiraIssue(rec.JiraKey, rec.ID)
+			}
+			m.histConfirmDeleteJira = false
+		default:
+			m.histConfirmDeleteJira = false
 		}
 		return m, nil
 	}
@@ -1861,6 +1917,12 @@ func (m model) handleShowTicketsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "d":
 		if len(m.histRecords) > 0 {
 			m.histConfirmDelete = true
+			m.histConfirmDeleteJira = false
+		}
+	case "D":
+		if len(m.histRecords) > 0 {
+			m.histConfirmDeleteJira = true
+			m.histConfirmDelete = false
 		}
 	case "q", "esc", "enter":
 		return m, tea.Quit
@@ -2754,9 +2816,14 @@ func (m model) viewShowTickets() string {
 	var footerText string
 	if m.histConfirmDelete && len(m.histRecords) > 0 {
 		rec := m.histRecords[m.histCursor]
-		footerText = errorStyle.Render(fmt.Sprintf("Delete %s %q? (y/N)", rec.JiraKey, truncate(rec.Title, 30)))
+		footerText = errorStyle.Render(fmt.Sprintf("Delete local record for %s %q? (y/N)", rec.JiraKey, truncate(rec.Title, 28)))
+	} else if m.histConfirmDeleteJira && len(m.histRecords) > 0 {
+		rec := m.histRecords[m.histCursor]
+		footerText = errorStyle.Render(fmt.Sprintf("Delete %s from Jira AND local? (y/N)", rec.JiraKey))
+	} else if m.histJiraDeleteErr != nil {
+		footerText = errorStyle.Render("Jira delete failed: " + m.histJiraDeleteErr.Error())
 	} else {
-		footerText = "↑↓/jk navigate  •  PgUp/PgDn jump  •  o open URL  •  d delete  •  q / Esc to quit"
+		footerText = "↑↓/jk navigate  •  PgUp/PgDn jump  •  o open URL  •  d local  •  D delete from Jira  •  q / Esc to quit"
 	}
 	parts = append(parts, footerStyle.Width(w).Render(footerText))
 

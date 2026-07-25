@@ -102,6 +102,7 @@ screenExportCSV                 // Done-screen 'e' export: path input, overwrite
 | Create issue (ADF/v3) | POST | `/rest/api/3/issue` (when `JIRA_USE_ADF=true`) |
 | Fetch single issue | GET | `/rest/api/2/issue/{key}?fields=...` |
 | JQL search | POST | `/rest/api/3/search/jql` (JSON body: jql, fields, maxResults, nextPageToken) |
+| Delete issue | DELETE | `/rest/api/2/issue/{key}` — requires "Delete Issues" project permission |
 
 `searchIssues` uses cursor-based pagination via `nextPageToken`. The old `GET /rest/api/2/search` endpoint was removed by Atlassian (HTTP 410).
 
@@ -134,3 +135,4 @@ Unit tests in `*_test.go` alongside source. Use `go test ./...`.
 - Config is saved atomically: write to temp file, then `os.Rename` — prevents credential loss on crash.
 - `lipgloss.SetHasDarkBackground(true)` is called in `main()` before `tea.NewProgram()`. Do not remove it. `textarea.New()` creates styles with `lipgloss.AdaptiveColor`; without this call, lipgloss fires a one-time OSC 11 terminal background-color query the first time the epic description textarea renders. By that point bubbletea owns stdin and the terminal response arrives as keystrokes in the focused input.
 - `exportCSVResult*` fields on the model drive `screenExportCSV` (opened by pressing `e` on `screenDone`). `exportResultsCSV(path string)` takes the path as a parameter. Default filename is `<epicKey>.csv` when an epic key is set, otherwise `jira_tickets_results.csv` (`defaultExportPath()`). The overwrite check uses `os.Stat` — if the file exists, `exportCSVResultConfirm=true` gates an inline y/n prompt before writing.
+- `--show-tickets` has two delete modes: `d` deletes the local DB record only (synchronous, no network); `D` (shift+d) calls `DeleteIssue` (async `tea.Cmd`), which removes the issue from Jira then removes the local record on success. `histConfirmDelete` / `histConfirmDeleteJira` gate the respective confirmation prompts; `histJiraDeleteErr` holds any Jira API error and is displayed in the footer until the next keypress. `cmdDeleteJiraIssue` fires the async delete and returns `jiraDeleteMsg`.
