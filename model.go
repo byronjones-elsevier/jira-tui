@@ -474,8 +474,17 @@ func (m model) cmdCreateManualTicket(t Ticket, issueType, parentKey string) tea.
 
 func (m model) cmdDeleteJiraIssue(key string, recordID int64) tea.Cmd {
 	client := m.client
+	cfg := m.config
 	return func() tea.Msg {
-		err := client.DeleteIssue(key)
+		c := client
+		if c == nil {
+			if cfg.BaseURL == "" || cfg.Email == "" || cfg.APIToken == "" {
+				return jiraDeleteMsg{recordID: recordID, err: fmt.Errorf("no Jira credentials configured")}
+			}
+			c = newJiraClient(cfg.BaseURL, cfg.Email, cfg.APIToken)
+			c.useADF = cfg.UseADF
+		}
+		err := c.DeleteIssue(key)
 		return jiraDeleteMsg{recordID: recordID, err: err}
 	}
 }
