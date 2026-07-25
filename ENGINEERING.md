@@ -106,6 +106,7 @@ screenDone (any mode, 'e' key):
 | `project_key` | TEXT | |
 | `assignee` | TEXT | |
 | `labels` | TEXT | JSON array |
+| `status` | TEXT | Last known workflow status (e.g. "To Do", "In Progress"); updated when the user applies a transition via `t` |
 
 **Key queries:**
 - `findDuplicates(title, description)` — used before creation to detect re-runs
@@ -180,6 +181,8 @@ Legacy locations (`~/.jira_config`, `~/.jira_boards_cache.json`) are read as a f
 | Fetch single issue | `GET /rest/api/2/issue/{key}?fields=summary,description,assignee,reporter,labels,issuetype,status` |
 | Search issues (JQL) | `POST /rest/api/3/search/jql` — JSON body: `{jql, fields[], maxResults, nextPageToken}`; cursor-based pagination via `nextPageToken`; used by `GetEpicChildren` (old `GET /rest/api/2/search` was removed by Atlassian, HTTP 410) |
 | Delete issue | `DELETE /rest/api/2/issue/{key}` — requires "Delete Issues" project permission; used by `--show-tickets` `D` key |
+| List transitions | `GET /rest/api/2/issue/{key}/transitions` — returns available workflow transitions for the issue's current state |
+| Apply transition | `POST /rest/api/2/issue/{key}/transitions` — body: `{"transition":{"id":"<id>"}}` |
 
 All calls use HTTP Basic auth (`email:apiToken`).
 
