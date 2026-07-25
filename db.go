@@ -75,22 +75,56 @@ func openDB() (*sql.DB, error) {
 	return db, nil
 }
 
+// currentSchemaVersion is the schema version this build expects.
+// Bump this and add a migration step in migrateDB whenever the schema changes.
+const currentSchemaVersion = 1
+
 func migrateDB(db *sql.DB) error {
-	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS tickets (
-		id          INTEGER PRIMARY KEY AUTOINCREMENT,
-		title       TEXT    NOT NULL,
-		description TEXT    NOT NULL DEFAULT '',
-		jira_key    TEXT    NOT NULL,
-		url         TEXT    NOT NULL,
-		created_at  TEXT    NOT NULL,
-		ticket_type TEXT    NOT NULL DEFAULT 'Task',
-		parent_key  TEXT    NOT NULL DEFAULT '',
-		parent_url  TEXT    NOT NULL DEFAULT '',
-		project_key TEXT    NOT NULL DEFAULT '',
-		assignee    TEXT    NOT NULL DEFAULT '',
-		labels      TEXT    NOT NULL DEFAULT '[]'
-	)`)
-	return err
+	// Schema-version table — created unconditionally; safe on first open.
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_version (
+		version INTEGER NOT NULL
+	)`); err != nil {
+		return fmt.Errorf("create schema_version table: %w", err)
+	}
+
+	// Read current version (0 if table is empty).
+	var version int
+	row := db.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM schema_version`)
+	if err := row.Scan(&version); err != nil {
+		return fmt.Errorf("read schema version: %w", err)
+	}
+
+	// Run migrations in order; each step is idempotent.
+	if version < 1 {
+		if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS tickets (
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			title       TEXT    NOT NULL,
+			description TEXT    NOT NULL DEFAULT '',
+			jira_key    TEXT    NOT NULL,
+			url         TEXT    NOT NULL,
+			created_at  TEXT    NOT NULL,
+			ticket_type TEXT    NOT NULL DEFAULT 'Task',
+			parent_key  TEXT    NOT NULL DEFAULT '',
+			parent_url  TEXT    NOT NULL DEFAULT '',
+			project_key TEXT    NOT NULL DEFAULT '',
+			assignee    TEXT    NOT NULL DEFAULT '',
+			labels      TEXT    NOT NULL DEFAULT '[]'
+		)`); err != nil {
+			return fmt.Errorf("migration 1 — create tickets table: %w", err)
+		}
+	}
+
+	// Write the current version (no-op if already up to date).
+	if version < currentSchemaVersion {
+		if _, err := db.Exec(`DELETE FROM schema_version`); err != nil {
+			return fmt.Errorf("update schema version: %w", err)
+		}
+		if _, err := db.Exec(`INSERT INTO schema_version (version) VALUES (?)`, currentSchemaVersion); err != nil {
+			return fmt.Errorf("update schema version: %w", err)
+		}
+	}
+
+	return nil
 }
 
 func insertTicket(db *sql.DB, r TicketRecord) error {
