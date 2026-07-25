@@ -192,7 +192,7 @@ SQLite local reads/writes are sub-millisecond. Wrapping them in `tea.Cmd` gorout
 - **No retry for failed tickets.** A transient API error requires a full restart; there is no "retry failed" option. **Fixed in code** (`r` on screenDone resets failed results, deselects successful tickets, and re-enters screenCreating; in epic mode the already-created epic is reused).
 - **Assignee resolution failure is silent.** A network error during `ResolveAccountID` is treated as "user not found" — the ticket is created without an assignee with a success checkmark. **Fixed in code** (`!assignee` warning shown in the creation row when ResolveAccountID returns `""` or errors for a non-empty assignee field).
 - **Progress bar width hardcoded at 44 chars** (`viewCreating`). Does not adapt to terminal width. **Fixed in code** (bar width derived from `m.width` via panel width formula).
-- **`screenCreating` is uninterruptible.** Once creation begins there is no pause or abort; Ctrl+C kills the process but leaves in-flight API calls (20 s timeout) running in background goroutines.
+- **`screenCreating` is uninterruptible.** Once creation begins there is no pause or abort; Ctrl+C kills the process but leaves in-flight API calls (20 s timeout) running in background goroutines. **Fixed in code** (Esc/q sets `creationAborted`; the in-flight ticket finishes before the loop stops; subsequent tickets are not started; transitions to screenDone with whatever results exist).
 - **`m.err` is never cleared on `screenBoards`.** An error from a failed board load persists in the view after the user begins interacting. **Fixed in code** (cleared at the start of every `handleBoardsKey` call).
 
 ### Missing features
@@ -205,7 +205,7 @@ SQLite local reads/writes are sub-millisecond. Wrapping them in `tea.Cmd` gorout
 - **No schema migration.** `migrateDB` is a single `CREATE TABLE IF NOT EXISTS`. Adding a column to an existing DB requires a manual `ALTER TABLE`; the code silently does nothing if the table already exists. **Fixed in code** (`schema_version` table tracks version; `migrateDB` runs numbered steps in order; bump `currentSchemaVersion` and add a step for future columns).
 - **No cache TTL.** A board list cached months ago is still served as the warm cache on startup (with a background sync); there is no maximum age after which a foreground re-fetch is forced. **Fixed in code** (24-hour TTL; caches older than 24 h are treated as a miss, forcing a foreground fetch).
 - **`GetBoards` has no page cap.** If `IsLast` is never true the board-fetch loop runs indefinitely. A limit of ~40 pages would prevent a hang. **Fixed in code** (loop capped at 40 pages = 2 000 boards).
-- **`CreateIssue` uses REST v2 plain-string description.** Instances that require Atlassian Document Format (ADF) will create tickets with no description.
+- **`CreateIssue` uses REST v2 plain-string description.** Instances that require Atlassian Document Format (ADF) will create tickets with no description. **Fixed in code** (set `JIRA_USE_ADF=true` or `JIRA_USE_ADF="true"` in config; switches both `CreateIssue` and `CreateEpic` to REST v3 with ADF-wrapped descriptions; `toADFJSON` handles paragraphs and hard breaks).
 - **No per-ticket assignee fallback visibility.** When an assignee cannot be resolved, the user is not told; the ticket is created as unassigned silently.
 
 ## Build

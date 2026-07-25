@@ -123,10 +123,11 @@ type model struct {
 	selectedTickets map[int]bool
 
 	// Creation
-	creating    int // index of ticket currently being created
-	results     []CreateResult
-	progress    float64
-	epicPending bool // waiting for epic creation before starting tickets
+	creating         int // index of ticket currently being created
+	results          []CreateResult
+	progress         float64
+	epicPending      bool // waiting for epic creation before starting tickets
+	creationAborted  bool // user pressed Esc/q during screenCreating
 
 	// Epic setup (screenEpicSetup)
 	// epicInputs[0]=title, epicInputs[1]=requester; description is epicDescTA.
@@ -252,6 +253,7 @@ func newModel(cfg Config, tickets []Ticket, db *sql.DB, mode appMode) model {
 		m.loading = true
 		m.loadingMsg = "Verifying saved credentials…"
 		m.client = newJiraClient(cfg.BaseURL, cfg.Email, cfg.APIToken)
+		m.client.useADF = cfg.UseADF
 	} else {
 		m.screen = screenAuth
 		authInps[0].Focus()
@@ -451,8 +453,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			TicketType:  "Epic",
 			ProjectKey:  m.projectKey,
 		})
-		// Start creating child tickets, or finish if none are selected.
-		first := m.firstSelected()
+		// Start creating child tickets, or finish if none are selected / aborted.
+		first := -1
+		if !m.creationAborted {
+			first = m.firstSelected()
+		}
 		if first >= 0 {
 			m.creating = first
 			return m, m.cmdCreateTicket(first)
@@ -492,10 +497,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// Find the next selected ticket to create.
 		next := -1
-		for i := msg.index + 1; i < len(m.tickets); i++ {
-			if m.selectedTickets[i] {
-				next = i
-				break
+		if !m.creationAborted {
+			for i := msg.index + 1; i < len(m.tickets); i++ {
+				if m.selectedTickets[i] {
+					next = i
+					break
+				}
 			}
 		}
 		if next >= 0 {
@@ -536,12 +543,24 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleEpicSetupKey(msg)
 	case screenEpicDupWarn:
 		return m.handleEpicDupWarnKey(msg)
+	case screenCreating:
+		return m.handleCreatingKey(msg)
 	case screenDupCheck:
 		return m.handleDupCheckKey(msg)
 	case screenShowTickets:
 		return m.handleShowTicketsKey(msg)
 	case screenDone:
 		return m.handleDoneKey(msg)
+	}
+	return m, nil
+}
+
+// ── Creating keys ─────────────────────────────────────────────────────────────
+
+func (m model) handleCreatingKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "q":
+		m.creationAborted = true
 	}
 	return m, nil
 }
@@ -698,6 +717,7 @@ func (m model) handleAuthKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.config.Email = email
 			m.config.APIToken = token
 			m.client = newJiraClient(baseURL, email, token)
+			m.client.useADF = m.config.UseADF
 			m.screen = screenVerify
 			m.loading = true
 			m.loadingMsg = "Verifying credentials…"
@@ -963,6 +983,7 @@ func (m model) checkDupsAndProceed() (model, tea.Cmd) {
 // startCreation begins the screenCreating flow.
 // In modeEpic, if the epic was already created (m.epicKey != ""), skip to tickets.
 func (m model) startCreation() (model, tea.Cmd) {
+	m.creationAborted = false
 	if m.mode == modeEpic && m.epicKey == "" {
 		m.screen = screenCreating
 		m.epicPending = true
@@ -1721,8 +1742,13 @@ func (m model) viewCreating() string {
 		rows = append(rows, "  "+status+"  "+truncate(t.Title, 36))
 	}
 
+	footer := footerStyle.Width(w - 4).Render("Esc / q  abort (in-flight ticket finishes first)")
+	if m.creationAborted {
+		footer = errorStyle.Render("Aborting… waiting for in-flight ticket to complete")
+	}
+
 	body := lipgloss.JoinVertical(lipgloss.Left,
-		title, "", bar, "", strings.Join(rows, "\n"))
+		title, "", bar, "", strings.Join(rows, "\n"), "", footer)
 
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center,
 		panelStyle.Width(w).Render(body))
