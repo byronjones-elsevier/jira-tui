@@ -4,94 +4,130 @@ Context for AI coding assistants working in this repo.
 
 ## What this is
 
-A Go terminal UI app that batch-creates Jira tickets from a CSV. Converted from `create-jira-tickets.sh` (still present for reference — do not modify it). Built with bubbletea (elm architecture), lipgloss (styles), and bubbles (components).
+A Go terminal UI app that creates Jira tickets interactively. Started as a rewrite of `create-jira-tickets.sh` (kept for reference — do not modify). Built with bubbletea (elm architecture), lipgloss (styles), and bubbles (components). Pure-Go SQLite via `modernc.org/sqlite` (no CGO).
 
 ## File map (read these before editing)
 
 ```
-main.go       – entry point only; ~25 lines
-model.go      – ALL TUI logic: screens, Update, View, key handlers, commands
-jira.go       – Jira REST API client
-config.go     – ~/.jira_config read/write (bash-compatible KEY="value" format)
-cache.go      – ~/.jira_boards_cache.json read/write + formatAge helper
-csv.go        – CSV parser + Ticket struct
-styles.go     – lipgloss vars + progressBar/truncate helpers
+main.go       – entry point; flag parsing (-ce -ct -st -ccfe -pk -h), first-run check, DB open, bubbletea launch
+model.go      – ALL TUI logic: screen state machine, Update, View, key handlers, tea.Cmd closures
+jira.go       – Jira REST API client (auth, boards, user lookup, CreateIssue, CreateEpic,
+                GetIssue, GetEpicChildren, searchIssues, IssueDescription, toADFJSON)
+db.go         – SQLite history DB (openDB, insertTicket, findDuplicates, allTickets, deleteTicket)
+config.go     – ~/.jira-tui/config read/write (KEY="value" bash-compatible format)
+cache.go      – ~/.jira-tui/boards_cache.json load/save + formatAge helper; 24-hour TTL
+csv.go        – Ticket struct + parseCSV (BOM-stripping, empty-title filtering)
+styles.go     – lipgloss colour vars, style vars, progressBar(), truncate()
+Makefile      – build, test, lint, install, run targets
+
+.github/workflows/ci.yml      – build + test + lint on push/PR
+.github/workflows/release.yml – cross-compile 6 targets + GitHub release on v* tag
+
+VHS_Testing.tape   – VHS tape for interactive TUI recording and testing
+run_vhs_tests.sh   – test runner: assertion tests + VHS recording; requires vhs + gum
+MANUAL_TESTING.md  – hierarchical manual testing guide (hierarchy IDs for each screen/flow)
 ```
 
 ## Build command
 
 ```bash
 go build -o jira-tui .
+# Or:
+make build
 ```
 
-Go is not installed in the Cowork sandbox — build must be verified on the host machine.
+Run tests:
+```bash
+go test ./...
+make test
+```
 
-## Completed features
+## Modes
 
-- [x] Full TUI with screen state machine (Auth → Verify → Boards → Settings → Tickets → Creating → Done)
-- [x] Config persistence: `~/.jira_config` (loaded on startup, auto-saved after auth)
-- [x] Jira auth verification via `/rest/api/2/myself`
-- [x] Board list: fully paginated (loops 50 at a time until `isLast=true`)
-- [x] Board list: searchable (case-insensitive substring, resets cursor on query change)
-- [x] Board list: scrolling window with PgUp/PgDn and j/k navigation
-- [x] Board list: manual project key entry (M key)
-- [x] Board list: local cache (`~/.jira_boards_cache.json`) with instant display + async background refresh
-- [x] Board list: visual sync indicator (spinner + "syncing…" / "synced Xm ago")
-- [x] Board list: manual refresh with R key
-- [x] Settings screen: assignee fallback (unassigned / requester) + issue type selector
-- [x] Ticket list: two-panel (list + preview), Space to toggle, 'a' for all
-- [x] Batch creation: sequential with progress bar and per-ticket status
-- [x] Done screen: created/failed summary with issue keys and URLs
-- [x] Assignee resolution via `/rest/api/3/user/search` (exact email or display name match)
-- [x] Git repo initialised with `.gitignore`
+| Flag | Const | Flow |
+|------|-------|------|
+| _(none)_ | `modeNormal` | Auth → board → settings → ticket list → create → done |
+| `-ce` / `--create-epic` | `modeEpic` | Same + Epic Setup screen; tickets become children of the new epic |
+| `-ct` / `--create-ticket` | `modeManual` | Auth → board → manual form → create; if Epic type, loops to add subtasks |
+| `-st` / `--show-tickets` | `modeShow` | Local SQLite history only; no network |
+| `-ccfe <KEY>` / `--create-csv-from-epic <KEY>` | `modeEpicToCSV` | Auth → query epic → review children → save CSV |
+| `-pk <KEY>` / `--project-key <KEY>` | _(flag, any mode)_ | Skip board picker; sets `m.projectKey` directly |
 
-## Pending / known issues
+## Screen state machine
 
-- [ ] `CreateIssue` uses REST v2 plain-string description. Jira instances requiring v3 ADF will create tickets with no description. Detect or always send ADF.
-- [ ] No retry on transient API failures during batch create.
-- [ ] Board cache has no TTL — always refreshes in background. Could skip sync when cache < N minutes old.
-- [ ] Assignee resolution: if two users share a name prefix, wrong one may match. Consider email-only matching.
+```
+modeNormal / modeEpic / modeManual / modeEpicToCSV:
+  [screenFirstRun] (only on very first launch when ~/.jira-tui/ does not exist)
+  screenAuth → screenVerify → screenBoards (skipped with -pk)
+    modeNormal:   → screenSettings → [screenDupCheck] → screenTickets → screenCreating → screenDone
+    modeEpic:     → screenSettings → screenEpicSetup → [screenEpicDupWarn] → screenTickets
+                    → [screenDupCheck] → screenCreating → screenDone
+    modeManual:   → screenManualEntry → [screenManualContinue] → screenManualEntry (loop) → screenDone
+    modeEpicToCSV:→ screenEpicCSVQuery → screenEpicCSVReview → screenEpicCSVPath → quit
+
+modeShow: screenShowTickets → quit
+```
+
+## Screen enum (model.go)
+
+```go
+screenFirstRun                  // first-launch directory setup
+screenAuth                      // credential entry form
+screenVerify                    // verifying creds (spinner)
+screenBoards                    // searchable board picker
+screenSettings                  // assignee fallback + issue type selector
+screenEpicSetup                 // epic title / description / requester
+screenEpicDupWarn               // epic title collision warning (Y/N)
+screenTickets                   // ticket list + preview panel
+screenDupCheck                  // per-ticket duplicate decision
+screenCreating                  // batch creation progress
+screenDone                      // results summary
+screenShowTickets               // history browser (--show-tickets)
+screenManualEntry               // single-ticket form (--create-ticket)
+screenManualContinue            // "add a subtask?" prompt (after Epic creation)
+screenEpicCSVQuery              // epic fetch spinner + error state
+screenEpicCSVReview             // scrollable child issue list
+screenEpicCSVPath               // file-path text input
+```
+
+## Jira API calls
+
+| Call | Method | Endpoint |
+|------|--------|----------|
+| Auth verify | GET | `/rest/api/2/myself` |
+| Boards (paginated) | GET | `/rest/agile/1.0/board?maxResults=50&startAt=N` |
+| Resolve assignee | GET | `/rest/api/3/user/search?query=<email>` |
+| Create issue (v2) | POST | `/rest/api/2/issue` |
+| Create issue (ADF/v3) | POST | `/rest/api/3/issue` (when `JIRA_USE_ADF=true`) |
+| Fetch single issue | GET | `/rest/api/2/issue/{key}?fields=...` |
+| JQL search | POST | `/rest/api/3/search/jql` (JSON body: jql, fields, maxResults, nextPageToken) |
+
+`searchIssues` uses cursor-based pagination via `nextPageToken`. The old `GET /rest/api/2/search` endpoint was removed by Atlassian (HTTP 410).
 
 ## Conventions
 
-- Model is a **value type** (`model`, not `*model`) — bubbletea pattern.
-- Async work: `tea.Cmd` closures capture `m.client` (pointer, safe to copy).
-- Colours: defined as `lipgloss.Color` vars in `styles.go` (purple, green, red, muted, subtle).
-- `maxInt(a,b)` is a local helper — do NOT use the Go 1.21 `max` builtin (causes shadowing compile error in this module).
-- `clamp(v, min, max int)` is also local in `model.go`.
-- Config file format: `KEY="value"` per line. `saveConfig` preserves unknown keys.
-- Cache file format: JSON with `base_url` field — used to invalidate cache on Jira URL change.
+- Model is a **value type** (`model`, not `*model`) — standard bubbletea pattern.
+- Async work is `tea.Cmd` closures; results come back as typed message structs.
+- All `tea.Cmd` functions are named `cmd*` (e.g. `cmdVerifyAuth`, `cmdCreateIssue`).
+- Colours defined as `lipgloss.Color` vars in `styles.go`.
+- `clamp(v, min, max int)` is local in `model.go` — do not use `min`/`max` builtins (shadowing).
+- Config format: `KEY="value"` per line. `saveConfig` rewrites known keys, preserves unknowns.
+- Data dir: `~/.jira-tui/` (override with `JIRA_TUI_DIR`). Legacy `~/.jira_config` fallback still supported.
 
-## Spinner note
+## Testing
 
-`bubbles/spinner` v0.18 uses `spinner.Dot` (singular), not `spinner.Dots`. Using the wrong name causes a compile error.
+Unit tests in `*_test.go` alongside source. Use `go test ./...`.
 
-## Screen enum
+**VHS integration tests** (`run_vhs_tests.sh`):
+- Requires `vhs` and `gum` on PATH (`brew install vhs gum`).
+- Requires `.env.test` with real Jira credentials (see `.env.test.example`).
+- Runs assertion-based CLI tests first (no network), then launches `VHS_Testing.tape` for TUI recording.
+- All `th()` header calls in the tape appear **only at the shell prompt** — never inside a running TUI session (Bubbletea's alt-screen would receive the Enter keystroke as a quit command).
 
-```go
-screenAuth     // credential entry
-screenVerify   // verifying creds (full-screen spinner)
-screenBoards   // board list / manual key entry
-screenSettings // assignee fallback + issue type
-screenTickets  // ticket list + preview
-screenCreating // creation progress
-screenDone     // results summary
-```
+## Key gotchas
 
-## boardPageSize logic
-
-`m.height - 12` clamped to `[4, 25]`. The constant 12 accounts for title, subtitle, search bar, pagination line, scroll arrows, manual-key overlay, error line, footer.
-
-## Cache flow detail
-
-```
-authVerifiedMsg received
-  loadBoardsCache(baseURL)
-  ├─ hit  → m.boards = cached, m.boardsSyncing = true
-  │          return Batch(cmdSyncBoards, boardSearch.Focus)
-  └─ miss → m.loading = true, loadingMsg = "Loading all boards…"
-             return cmdLoadBoards()
-
-boardsLoadedMsg  → saveBoardsCache; m.loading = false; boardSearch.Focus
-boardsSyncedMsg  → m.boardsSyncing = false; saveBoardsCache if no error; clamp cursor
-```
+- `bubbles/spinner` uses `spinner.Dot` (singular), not `spinner.Dots`.
+- Description field is `json.RawMessage` — Jira v2 returns a plain string; v3 returns ADF JSON. `IssueDescription()` handles both.
+- `GetEpicChildren` tries `parent = KEY` first, then falls back to `"Epic Link" = KEY` for classic projects.
+- `createCSVFromEpic` saves to the **current working directory**, not `~/.jira-tui/`.
+- Config is saved atomically: write to temp file, then `os.Rename` — prevents credential loss on crash.

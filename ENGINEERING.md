@@ -170,7 +170,7 @@ Legacy locations (`~/.jira_config`, `~/.jira_boards_cache.json`) are read as a f
 | Create issue | `POST /rest/api/2/issue` (v2) or `POST /rest/api/3/issue` (v3 when `JIRA_USE_ADF=true`) |
 | Create epic | Same endpoint switching as above; tries `customfield_10011` (Epic Name), retries without on error |
 | Fetch single issue | `GET /rest/api/2/issue/{key}?fields=summary,description,assignee,reporter,labels,issuetype,status` |
-| Search issues (JQL) | `GET /rest/api/2/search?jql=<jql>&fields=<fields>&maxResults=50&startAt=N` — paginated; used by `GetEpicChildren` |
+| Search issues (JQL) | `POST /rest/api/3/search/jql` — JSON body: `{jql, fields[], maxResults, nextPageToken}`; cursor-based pagination via `nextPageToken`; used by `GetEpicChildren` (old `GET /rest/api/2/search` was removed by Atlassian, HTTP 410) |
 
 All calls use HTTP Basic auth (`email:apiToken`).
 

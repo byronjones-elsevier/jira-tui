@@ -235,3 +235,37 @@ make lint     # go vet + shellcheck
 make install  # copy binary to ~/.local/bin
 make run      # build and launch
 ```
+
+## Testing
+
+### Unit tests
+
+```bash
+go test ./...
+```
+
+All tests are in `*_test.go` files alongside the source. Table-driven where appropriate.
+
+### Interactive / VHS tests
+
+`run_vhs_tests.sh` drives the full application through its interactive flows:
+
+1. **Assertion tests** — CLI flag validation, CSV parsing, and environment variable checks. No network required.
+2. **VHS recording** — launches `VHS_Testing.tape` to record a GIF of real TUI sessions against a live Jira instance. Produces screenshots for each major test point in `vhs-output/`.
+
+**Prerequisites:**
+
+```bash
+brew install vhs gum        # or: go install github.com/charmbracelet/vhs@latest
+cp .env.test.example .env.test
+# edit .env.test with your Jira credentials and project/epic keys
+```
+
+**Run:**
+
+```bash
+./run_vhs_tests.sh          # full suite
+SKIP_VHS=1 ./run_vhs_tests.sh   # assertion tests only (no Jira creds needed)
+```
+
+See `MANUAL_TESTING.md` for the complete hierarchical list of manual test cases (referenced by ID in the VHS tape).
