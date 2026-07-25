@@ -29,6 +29,7 @@ The program has five modes, selected at launch via flags:
 | `--show-tickets` / `-st` | `modeShow` | Skips Jira auth entirely; loads local history from SQLite and displays it |
 | `--create-ticket` / `-ct` | `modeManual` | Auth → board → manual form (title/desc/assignee/labels/type) → create; if Epic, loops to offer subtask creation |
 | `--create-csv-from-epic <KEY>` / `-ccfe <KEY>` | `modeEpicToCSV` | Auth → query ticket by key → review children → choose save path → write CSV |
+| _(Done screen `e` key, any mode)_ | — | `screenDone` → `screenExportCSV` (path input, overwrite confirm, save feedback) → quit |
 
 ## Screen state machine
 
@@ -57,6 +58,12 @@ modeEpicToCSV:
     → screenEpicCSVReview (scrollable child list, Enter to proceed)
     → screenEpicCSVPath (file-path textinput, Enter to write CSV)
     → success state on screenEpicCSVPath → quit
+
+screenDone (any mode, 'e' key):
+  screenDone → screenExportCSV (path input; default <epicKey>.csv or jira_tickets_results.csv)
+    → [overwrite confirm if file exists]
+    → success state on screenExportCSV → quit
+    → Esc at any point returns to screenDone
 ```
 
 - `[screenDupCheck]` and `[screenEpicDupWarn]` are only shown when duplicates are found in the local DB.

@@ -28,7 +28,7 @@ An interactive terminal UI for creating Jira tickets.
 - **Persistent credentials** — saved to `~/.jira-tui/config` after first successful login
 - **Env-var credentials** — `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN` override the config file
 - **ADF support** — optionally send descriptions as Atlassian Document Format (REST v3) via `JIRA_USE_ADF=true`
-- **CSV export** — export the results of a creation run to `jira_tickets_results.csv`
+- **CSV export** — press `e` on the Done screen to open an export screen; default filename is `<TICKET-KEY>.csv` (or `jira_tickets_results.csv` when no parent ticket exists); edit the path, get an overwrite prompt for existing files, and see inline success or error feedback
 - **URL opener** — press `o` on the done or history screen to open a ticket in the browser
 - **First-run setup** — prompts to create the data directory on first launch
 
@@ -155,7 +155,7 @@ Add dark mode,Implement dark theme support,,feature;ui
 | `↑` `↓` / `j` `k` | Scroll results |
 | `o` | Open selected ticket URL in browser |
 | `r` | Retry all failed tickets |
-| `e` | Export results to `jira_tickets_results.csv` (confirmation shown inline) |
+| `e` | Open export screen — edit path, confirm overwrite if needed, save CSV |
 | `q` / `Esc` / `Enter` | Quit |
 
 ### History screen (`--show-tickets`)

@@ -88,6 +88,7 @@ screenManualContinue            // "add a subtask?" prompt (after Epic creation)
 screenEpicCSVQuery              // ticket fetch spinner + error state
 screenEpicCSVReview             // scrollable child issue list
 screenEpicCSVPath               // file-path text input
+screenExportCSV                 // Done-screen 'e' export: path input, overwrite confirm, save feedback
 ```
 
 ## Jira API calls
@@ -132,4 +133,4 @@ Unit tests in `*_test.go` alongside source. Use `go test ./...`.
 - `createCSVFromEpic` saves to the **current working directory**, not `~/.jira-tui/`.
 - Config is saved atomically: write to temp file, then `os.Rename` — prevents credential loss on crash.
 - `lipgloss.SetHasDarkBackground(true)` is called in `main()` before `tea.NewProgram()`. Do not remove it. `textarea.New()` creates styles with `lipgloss.AdaptiveColor`; without this call, lipgloss fires a one-time OSC 11 terminal background-color query the first time the epic description textarea renders. By that point bubbletea owns stdin and the terminal response arrives as keystrokes in the focused input.
-- `exportedPath` / `exportErr` on the model track the last `e`-key CSV export result. `viewDone` renders a confirmation or error line from these fields — always update both in `handleDoneKey` when calling `exportResultsCSV()`.
+- `exportCSVResult*` fields on the model drive `screenExportCSV` (opened by pressing `e` on `screenDone`). `exportResultsCSV(path string)` takes the path as a parameter. Default filename is `<epicKey>.csv` when an epic key is set, otherwise `jira_tickets_results.csv` (`defaultExportPath()`). The overwrite check uses `os.Stat` — if the file exists, `exportCSVResultConfirm=true` gates an inline y/n prompt before writing.
