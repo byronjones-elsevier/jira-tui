@@ -12,13 +12,14 @@ import (
 
 // Config holds all persisted settings.
 type Config struct {
-	BaseURL           string
-	Email             string
-	APIToken          string
-	DefaultBoardURL   string
-	AssigneeFallback  string // "unassigned" | "requester"
-	IssueType         string // "Task" | "Story" | "Bug" | ...
-	BoardCacheTTLHours int   // 0 means use default (24 h)
+	BaseURL            string
+	Email              string
+	APIToken           string
+	DefaultBoardURL    string
+	AssigneeFallback   string // "unassigned" | "requester"
+	IssueType          string // "Task" | "Story" | "Bug" | ...
+	BoardCacheTTLHours int    // 0 means use default (24 h)
+	UseADF             bool   // send descriptions as Atlassian Document Format (REST v3)
 }
 
 func configPath() string {
@@ -84,6 +85,8 @@ func loadConfig() Config {
 			if n, err := strconv.Atoi(val); err == nil && n >= 0 {
 				cfg.BoardCacheTTLHours = n
 			}
+		case "JIRA_USE_ADF":
+			cfg.UseADF = val == "1" || strings.EqualFold(val, "true")
 		}
 	}
 	// Environment variables override config file values.
@@ -100,6 +103,9 @@ func loadConfig() Config {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
 			cfg.BoardCacheTTLHours = n
 		}
+	}
+	if v := os.Getenv("JIRA_USE_ADF"); v != "" {
+		cfg.UseADF = v == "1" || strings.EqualFold(v, "true")
 	}
 
 	return cfg
@@ -140,6 +146,9 @@ func saveConfig(cfg Config) error {
 	}
 	if cfg.BoardCacheTTLHours > 0 {
 		updates["JIRA_BOARD_CACHE_TTL_HOURS"] = strconv.Itoa(cfg.BoardCacheTTLHours)
+	}
+	if cfg.UseADF {
+		updates["JIRA_USE_ADF"] = "true"
 	}
 
 	dir := filepath.Dir(path)

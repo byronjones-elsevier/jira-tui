@@ -16,6 +16,7 @@ type JiraClient struct {
 	email   string
 	token   string
 	http    *http.Client
+	useADF  bool // send descriptions as Atlassian Document Format via REST v3
 }
 
 // User represents the authenticated Jira user.
@@ -176,6 +177,40 @@ func (c *JiraClient) ResolveAccountID(email string) (string, error) {
 	return "", nil
 }
 
+// toADFJSON wraps plain text in Atlassian Document Format (ADF) for REST v3 endpoints.
+// Double newlines create new paragraphs; single newlines become hard breaks.
+func toADFJSON(text string) (string, error) {
+	type adfNode struct {
+		Type    string    `json:"type"`
+		Text    string    `json:"text,omitempty"`
+		Content []adfNode `json:"content,omitempty"`
+	}
+	type adfDoc struct {
+		Version int       `json:"version"`
+		Type    string    `json:"type"`
+		Content []adfNode `json:"content"`
+	}
+
+	paras := strings.Split(text, "\n\n")
+	var docContent []adfNode
+	for _, para := range paras {
+		lines := strings.Split(para, "\n")
+		var paraContent []adfNode
+		for i, line := range lines {
+			paraContent = append(paraContent, adfNode{Type: "text", Text: line})
+			if i < len(lines)-1 {
+				paraContent = append(paraContent, adfNode{Type: "hardBreak"})
+			}
+		}
+		docContent = append(docContent, adfNode{Type: "paragraph", Content: paraContent})
+	}
+	if len(docContent) == 0 {
+		docContent = []adfNode{{Type: "paragraph", Content: []adfNode{{Type: "text", Text: ""}}}}
+	}
+	b, err := json.Marshal(adfDoc{Version: 1, Type: "doc", Content: docContent})
+	return string(b), err
+}
+
 // CreateIssue creates a single Jira issue and returns its key (e.g. "PROJ-42").
 // parentKey, when non-empty, sets the parent field (linking a child to an epic or issue).
 func (c *JiraClient) CreateIssue(projectKey, issueType string, t Ticket, assigneeID, parentKey string) (string, error) {
@@ -198,7 +233,14 @@ func (c *JiraClient) CreateIssue(projectKey, issueType string, t Ticket, assigne
 	if err != nil {
 		return "", fmt.Errorf("marshal title: %w", err)
 	}
-	descJSON, err := json.Marshal(t.Description)
+	var descJSON string
+	if c.useADF {
+		descJSON, err = toADFJSON(t.Description)
+	} else {
+		var b []byte
+		b, err = json.Marshal(t.Description)
+		descJSON = string(b)
+	}
 	if err != nil {
 		return "", fmt.Errorf("marshal description: %w", err)
 	}
@@ -229,12 +271,16 @@ func (c *JiraClient) CreateIssue(projectKey, issueType string, t Ticket, assigne
 		parentClause = fmt.Sprintf(`,"parent":{"key":%s}`, pkJSON)
 	}
 
+	endpoint := "/rest/api/2/issue"
+	if c.useADF {
+		endpoint = "/rest/api/3/issue"
+	}
 	payload := fmt.Sprintf(
 		`{"fields":{"project":{"key":%s},"summary":%s,"description":%s,"issuetype":{"name":%s},"labels":%s%s%s}}`,
 		projJSON, summaryJSON, descJSON, typeJSON, labelsJSON, assigneeClause, parentClause,
 	)
 
-	data, err := c.postJSON("/rest/api/2/issue", payload)
+	data, err := c.postJSON(endpoint, payload)
 	if err != nil {
 		return "", err
 	}
@@ -261,7 +307,14 @@ func (c *JiraClient) CreateEpic(projectKey, title, desc, requester string) (stri
 	if err != nil {
 		return "", fmt.Errorf("marshal epic title: %w", err)
 	}
-	descJSON, err := json.Marshal(desc)
+	var descJSON string
+	if c.useADF {
+		descJSON, err = toADFJSON(desc)
+	} else {
+		var b []byte
+		b, err = json.Marshal(desc)
+		descJSON = string(b)
+	}
 	if err != nil {
 		return "", fmt.Errorf("marshal epic description: %w", err)
 	}
@@ -274,12 +327,16 @@ func (c *JiraClient) CreateEpic(projectKey, title, desc, requester string) (stri
 		return "", fmt.Errorf("marshal epic name: %w", err)
 	}
 
+	endpoint := "/rest/api/2/issue"
+	if c.useADF {
+		endpoint = "/rest/api/3/issue"
+	}
 	// Try with Epic Name custom field first (required on older Jira Cloud configs).
 	payload := fmt.Sprintf(
 		`{"fields":{"project":{"key":%s},"summary":%s,"description":%s,"issuetype":{"name":"Epic"},"customfield_10011":%s}}`,
 		projJSON, summaryJSON, descJSON, epicNameJSON,
 	)
-	data, err := c.postJSON("/rest/api/2/issue", payload)
+	data, err := c.postJSON(endpoint, payload)
 	if err != nil {
 		// Only retry without customfield_10011 when Jira rejects the field itself
 		// (field-validation 400). All other errors (network, 403, 404) are real failures.
@@ -290,7 +347,7 @@ func (c *JiraClient) CreateEpic(projectKey, title, desc, requester string) (stri
 			`{"fields":{"project":{"key":%s},"summary":%s,"description":%s,"issuetype":{"name":"Epic"}}}`,
 			projJSON, summaryJSON, descJSON,
 		)
-		data, err = c.postJSON("/rest/api/2/issue", payload)
+		data, err = c.postJSON(endpoint, payload)
 		if err != nil {
 			return "", err
 		}
