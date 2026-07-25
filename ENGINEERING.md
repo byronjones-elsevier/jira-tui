@@ -193,7 +193,7 @@ SQLite local reads/writes are sub-millisecond. Wrapping them in `tea.Cmd` gorout
 - **Assignee resolution failure is silent.** A network error during `ResolveAccountID` is treated as "user not found" — the ticket is created without an assignee with a success checkmark.
 - **Progress bar width hardcoded at 44 chars** (`viewCreating`). Does not adapt to terminal width.
 - **`screenCreating` is uninterruptible.** Once creation begins there is no pause or abort; Ctrl+C kills the process but leaves in-flight API calls (20 s timeout) running in background goroutines.
-- **`m.err` is never cleared on `screenBoards`.** An error from a failed board load persists in the view after the user begins interacting.
+- **`m.err` is never cleared on `screenBoards`.** An error from a failed board load persists in the view after the user begins interacting. **Fixed in code** (cleared at the start of every `handleBoardsKey` call).
 
 ### Missing features
 

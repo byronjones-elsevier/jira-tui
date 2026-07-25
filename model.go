@@ -650,6 +650,7 @@ func (m model) handleBoardsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.loading {
 		return m, nil
 	}
+	m.err = nil
 
 	if m.manualKeyMode {
 		var cmd tea.Cmd
