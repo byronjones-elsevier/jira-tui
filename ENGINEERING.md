@@ -179,10 +179,10 @@ SQLite local reads/writes are sub-millisecond. Wrapping them in `tea.Cmd` gorout
 | **Medium** | `model.go:checkDupsAndProceed` | DB errors in `findDuplicates` are silently treated as "no duplicates" — duplicate detection is bypassed on DB failure. **Fixed in code** (error surfaces in `m.err` and returns early). |
 | **Medium** | `model.go:handleEpicSetupKey` | `Esc` does not blur the currently focused `epicInputs` entry. The component retains its focused state in the background; `Blink` ticks continue; returning to `screenEpicSetup` may show the wrong input as focused. **Fixed in code** (Blur called before screen transition). |
 | **Medium** | `config.go:saveConfig` | File is truncated (`O_TRUNC`) before writing. A crash or disk-full between truncate and the final write leaves an empty or partial config file — credentials lost. Fix: write to a temp file then rename. **Fixed in code.** |
-| **Low** | `jira.go:GetBoards` | Boards with empty `location.projectKey` are included in the list. Selecting one sets `m.projectKey = ""`, which Jira rejects with a 400 on the next issue creation. |
+| **Low** | `jira.go:GetBoards` | Boards with empty `location.projectKey` are included in the list. Selecting one sets `m.projectKey = ""`, which Jira rejects with a 400 on the next issue creation. **Fixed in code** (boards with empty projectKey skipped). |
 | **Low** | `csv.go:parseCSV` | Excel UTF-8 CSVs include a BOM (`\xef\xbb\xbf`) that is prepended to the first field of every non-header row. Ticket titles get a three-byte prefix, breaking duplicate detection on re-runs. **Fixed in code.** |
-| **Low** | `jira.go:io.ReadAll` | Errors discarded at lines 65 and 85. A truncated response body produces an opaque JSON parse error. |
-| **Low** | `model.go` | `os.UserHomeDir()` errors are discarded at all three call sites (`appDir`, `oldConfigPath`, `oldBoardsCachePath`). In containers without `$HOME` the path becomes `/jira-tui/config`. |
+| **Low** | `jira.go:io.ReadAll` | Errors discarded at lines 65 and 85. A truncated response body produces an opaque JSON parse error. **Fixed in code** (both ReadAll calls now return errors). |
+| **Low** | `config.go` / `cache.go` | `os.UserHomeDir()` errors discarded in `oldConfigPath` and `oldBoardsCachePath`. In containers without `$HOME` the path becomes `/.jira_config`. **Fixed in code** (returns "" on error; legacy fallback silently skipped). |
 
 ### UX limitations
 

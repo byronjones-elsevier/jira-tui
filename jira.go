@@ -62,7 +62,10 @@ func (c *JiraClient) get(path string) ([]byte, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read response body: %w", err)
+	}
 	if resp.StatusCode >= 400 {
 		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
 	}
@@ -82,7 +85,10 @@ func (c *JiraClient) postJSON(path string, body string) ([]byte, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	b, _ := io.ReadAll(resp.Body)
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read response body: %w", err)
+	}
 	if resp.StatusCode >= 400 {
 		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(b))
 	}
@@ -128,6 +134,9 @@ func (c *JiraClient) GetBoards() ([]Board, error) {
 			return nil, err
 		}
 		for _, v := range page.Values {
+			if v.Location.ProjectKey == "" {
+				continue
+			}
 			boards = append(boards, Board{
 				ID:         v.ID,
 				Name:       v.Name,

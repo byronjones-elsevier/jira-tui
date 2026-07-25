@@ -25,7 +25,10 @@ func configPath() string {
 
 // oldConfigPath returns the legacy config location for migration fallback.
 func oldConfigPath() string {
-	home, _ := os.UserHomeDir()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
 	return filepath.Join(home, ".jira_config")
 }
 
