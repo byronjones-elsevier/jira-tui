@@ -1970,8 +1970,9 @@ func (m model) viewFirstRun() string {
 		envHint,
 	)
 
+	w := clamp(m.width-4, 54, 70)
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center,
-		panelStyle.Width(62).Render(body))
+		panelStyle.Width(w).Render(body))
 }
 
 // ── Auth view ─────────────────────────────────────────────────────────────────
@@ -2006,14 +2007,18 @@ func (m model) viewAuth() string {
 		footer,
 	)
 
+	w := clamp(m.width-4, 52, 70)
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center,
-		panelStyle.Width(52).Render(body))
+		panelStyle.Width(w).Render(body))
 }
 
 // ── Boards view ───────────────────────────────────────────────────────────────
 
 func (m model) viewBoards() string {
-	w := clamp(m.width-8, 60, 88)
+	w := m.width - 4
+	if w < 60 {
+		w = 60
+	}
 
 	title := titleStyle.Render("Select a Board")
 
@@ -2147,7 +2152,10 @@ func (m model) viewSettings() string {
 	body := lipgloss.JoinVertical(lipgloss.Left,
 		title, sub, "", af, "", it, "", footer)
 
-	w := clamp(m.width-8, 58, 84)
+	w := m.width - 4
+	if w < 58 {
+		w = 58
+	}
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center,
 		panelStyle.Width(w).Render(body))
 }
@@ -2241,6 +2249,10 @@ func (m model) viewTickets() string {
 // ── Dup-check view ────────────────────────────────────────────────────────────
 
 func (m model) viewDupCheck() string {
+	w := m.width - 4
+	if w < 64 {
+		w = 64
+	}
 	var rows []string
 	for i, item := range m.dupItems {
 		cursor := "  "
@@ -2253,7 +2265,7 @@ func (m model) viewDupCheck() string {
 			action = successStyle.Render("[CREATE] ")
 		}
 
-		titleLine := action + truncate(item.ticket.Title, 46)
+		titleLine := action + truncate(item.ticket.Title, w-17)
 		dupInfo := ""
 		if len(item.dups) > 0 {
 			d := item.dups[0]
@@ -2268,7 +2280,6 @@ func (m model) viewDupCheck() string {
 		rows = append(rows, "")
 	}
 
-	w := clamp(m.width-8, 64, 90)
 	footer := footerStyle.Width(w).Render(
 		"↑↓/jk navigate  •  Space/C create anyway  •  S skip  •  Enter proceed  •  Esc back")
 
@@ -2314,7 +2325,8 @@ func (m model) viewEpicSetup() string {
 		errLine = "\n" + errorStyle.Render("⚠  "+m.err.Error())
 	}
 
-	footer := footerStyle.Width(54).Render(
+	w := clamp(m.width-4, 54, 70)
+	footer := footerStyle.Width(w).Render(
 		"Tab / Shift+Tab move field  •  Enter next/newline  •  Esc back")
 
 	body := lipgloss.JoinVertical(lipgloss.Left,
@@ -2330,7 +2342,7 @@ func (m model) viewEpicSetup() string {
 	)
 
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center,
-		panelStyle.Width(54).Render(body))
+		panelStyle.Width(w).Render(body))
 }
 
 // ── Epic-dup-warn view ────────────────────────────────────────────────────────
@@ -2343,7 +2355,7 @@ func (m model) viewEpicDupWarn() string {
 			dimStyle.Render(r.CreatedAt.Format("2006-01-02")))
 	}
 
-	w := clamp(m.width-8, 52, 76)
+	w := clamp(m.width-4, 52, 76)
 	body := lipgloss.JoinVertical(lipgloss.Left,
 		titleStyle.Render("Epic Already Exists"),
 		"",
@@ -2364,8 +2376,11 @@ func (m model) viewEpicDupWarn() string {
 
 func (m model) viewCreating() string {
 	title := titleStyle.Render("Creating Tickets")
-	w := clamp(m.width-8, 60, 84)
-	barWidth := w - 14 // panel border (2) + padding (4) + "  100%" (6) + margin (2)
+	w := m.width - 4
+	if w < 60 {
+		w = 60
+	}
+	barWidth := w - 14 // panel inner (w-6) minus "  100%" (6) and margin (2)
 	if barWidth < 20 {
 		barWidth = 20
 	}
@@ -2385,7 +2400,7 @@ func (m model) viewCreating() string {
 			epicStatus = errorStyle.Render("✗ epic failed     ")
 		}
 		rows = append(rows, "  "+epicStatus+"  "+
-			labelStyle.Render("EPIC")+"  "+truncate(m.epicTitle, 36))
+			labelStyle.Render("EPIC")+"  "+truncate(m.epicTitle, w-34))
 	}
 
 	for i, t := range m.tickets {
@@ -2407,7 +2422,7 @@ func (m model) viewCreating() string {
 		default:
 			status = dimStyle.Render("· queued       ")
 		}
-		rows = append(rows, "  "+status+"  "+truncate(t.Title, 36))
+		rows = append(rows, "  "+status+"  "+truncate(t.Title, w-28))
 	}
 
 	footer := footerStyle.Width(w - 4).Render("Esc / q  abort (in-flight ticket finishes first)")
@@ -2429,7 +2444,10 @@ func (m model) viewManualEntry() string {
 		return m.viewSpinner("Creating ticket…")
 	}
 
-	w := clamp(m.width-8, 60, 84)
+	w := m.width - 4
+	if w < 60 {
+		w = 60
+	}
 	inputW := w - 8
 
 	header := titleStyle.Render("Create Ticket")
@@ -2492,7 +2510,7 @@ func (m model) viewManualEntry() string {
 // ── Manual continue view ──────────────────────────────────────────────────────
 
 func (m model) viewManualContinue() string {
-	w := clamp(m.width-8, 60, 84)
+	w := clamp(m.width-4, 52, 72)
 
 	epicRow := successStyle.Render("✓") + " " + labelStyle.Render("EPIC") + " " +
 		dimStyle.Render(fmt.Sprintf("%-12s", m.epicKey)) + " " + truncate(m.epicTitle, 36)
@@ -2561,7 +2579,10 @@ func (m model) viewDone() string {
 	summary := fmt.Sprintf("Created: %s   Failed: %s",
 		successStyle.Render(fmt.Sprintf("%d", created)), failStr)
 
-	w := clamp(m.width-8, 60, 90)
+	w := m.width - 4
+	if w < 60 {
+		w = 60
+	}
 
 	ps := m.donePageSize()
 	end := m.doneOffset + ps
@@ -2599,7 +2620,7 @@ func (m model) viewDone() string {
 // ── Export CSV view ───────────────────────────────────────────────────────────
 
 func (m model) viewExportCSV() string {
-	w := clamp(m.width-8, 60, 84)
+	w := clamp(m.width-4, 60, 84)
 
 	if m.exportCSVResultSaved {
 		rowCount := 0
@@ -2847,7 +2868,7 @@ func (m model) exportResultsCSV(path string) error {
 
 // viewEpicCSVQuery is shown when m.loading=false (error state after query).
 func (m model) viewEpicCSVQuery() string {
-	w := clamp(m.width-8, 52, 76)
+	w := clamp(m.width-4, 52, 76)
 	errLine := ""
 	if m.err != nil {
 		errLine = errorStyle.Render("⚠  " + m.err.Error())
@@ -2864,7 +2885,10 @@ func (m model) viewEpicCSVQuery() string {
 }
 
 func (m model) viewEpicCSVReview() string {
-	w := clamp(m.width-8, 72, 108)
+	w := m.width - 4
+	if w < 72 {
+		w = 72
+	}
 	issue := m.epicCSVIssue
 
 	issueTypeLabel := strings.ToUpper(issue.Fields.IssueType.Name)
@@ -2934,7 +2958,7 @@ func (m model) viewEpicCSVReview() string {
 }
 
 func (m model) viewEpicCSVPath() string {
-	w := clamp(m.width-8, 60, 84)
+	w := clamp(m.width-4, 60, 84)
 
 	if m.epicCSVSaved {
 		body := lipgloss.JoinVertical(lipgloss.Left,
