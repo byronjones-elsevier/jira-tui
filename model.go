@@ -3,6 +3,8 @@ package main
 import (
 	"database/sql"
 	"fmt"
+	"os/exec"
+	"runtime"
 	"strings"
 	"time"
 
@@ -138,6 +140,7 @@ type model struct {
 	dupCursor int
 
 	// Done (screenDone)
+	doneCursor int
 	doneOffset int
 
 	// Show tickets (screenShowTickets)
@@ -535,29 +538,71 @@ func (m model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // ── Done keys ─────────────────────────────────────────────────────────────────
 
 func (m model) handleDoneKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	total := m.doneRowCount()
+	ps := m.donePageSize()
 	switch msg.String() {
 	case "q", "esc", "enter":
 		return m, tea.Quit
 	case "up", "k":
-		if m.doneOffset > 0 {
-			m.doneOffset--
+		if m.doneCursor > 0 {
+			m.doneCursor--
+			if m.doneCursor < m.doneOffset {
+				m.doneOffset = m.doneCursor
+			}
 		}
 	case "down", "j":
-		if m.doneOffset < m.doneMaxOffset() {
-			m.doneOffset++
+		if m.doneCursor < total-1 {
+			m.doneCursor++
+			if m.doneCursor >= m.doneOffset+ps {
+				m.doneOffset = m.doneCursor - ps + 1
+			}
 		}
 	case "pgup", "ctrl+b":
-		m.doneOffset -= m.donePageSize()
-		if m.doneOffset < 0 {
-			m.doneOffset = 0
+		m.doneCursor -= ps
+		if m.doneCursor < 0 {
+			m.doneCursor = 0
+		}
+		if m.doneCursor < m.doneOffset {
+			m.doneOffset = m.doneCursor
 		}
 	case "pgdown", "ctrl+f":
-		m.doneOffset += m.donePageSize()
-		if max := m.doneMaxOffset(); m.doneOffset > max {
-			m.doneOffset = max
+		m.doneCursor += ps
+		if m.doneCursor >= total {
+			m.doneCursor = maxInt(0, total-1)
+		}
+		if m.doneCursor >= m.doneOffset+ps {
+			m.doneOffset = m.doneCursor - ps + 1
+		}
+	case "o":
+		if url := m.doneRowURL(m.doneCursor); url != "" {
+			_ = openURL(url)
 		}
 	}
 	return m, nil
+}
+
+// doneRowURL returns the browse URL for the nth visible result row (0-indexed).
+func (m model) doneRowURL(cursor int) string {
+	i := 0
+	if m.mode == modeEpic && m.epicKey != "" {
+		if i == cursor {
+			return m.epicURL
+		}
+		i++
+	}
+	for j, r := range m.results {
+		if !m.selectedTickets[j] {
+			continue
+		}
+		if r.Key == "" && r.Err == nil {
+			continue
+		}
+		if i == cursor {
+			return r.URL
+		}
+		i++
+	}
+	return ""
 }
 
 func (m model) donePageSize() int {
@@ -582,13 +627,6 @@ func (m model) doneRowCount() int {
 		}
 	}
 	return n
-}
-
-func (m model) doneMaxOffset() int {
-	if max := m.doneRowCount() - m.donePageSize(); max > 0 {
-		return max
-	}
-	return 0
 }
 
 // ── Auth keys ─────────────────────────────────────────────────────────────────
@@ -1079,6 +1117,12 @@ func (m model) handleShowTicketsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		maxOff := maxInt(0, len(m.histRecords)-ps)
 		if m.histOffset > maxOff {
 			m.histOffset = maxOff
+		}
+	case "o":
+		if len(m.histRecords) > 0 {
+			if url := m.histRecords[m.histCursor].URL; url != "" {
+				_ = openURL(url)
+			}
 		}
 	case "d":
 		if len(m.histRecords) > 0 {
@@ -1576,26 +1620,37 @@ func (m model) viewCreating() string {
 func (m model) viewDone() string {
 	created, failed := 0, 0
 	var allRows []string
+	rowIdx := 0
 
 	if m.mode == modeEpic && m.epicKey != "" {
-		allRows = append(allRows,
-			successStyle.Render("✓")+" "+
-				labelStyle.Render("EPIC")+" "+
-				dimStyle.Render(fmt.Sprintf("%-12s", m.epicKey))+" "+m.epicURL)
+		cur := "  "
+		if rowIdx == m.doneCursor {
+			cur = cursorStyle.Render("▶ ")
+		}
+		allRows = append(allRows, cur+successStyle.Render("✓")+" "+
+			labelStyle.Render("EPIC")+" "+
+			dimStyle.Render(fmt.Sprintf("%-12s", m.epicKey))+" "+m.epicURL)
+		rowIdx++
 	}
 
 	for i, r := range m.results {
 		if !m.selectedTickets[i] {
 			continue
 		}
+		cur := "  "
+		if rowIdx == m.doneCursor {
+			cur = cursorStyle.Render("▶ ")
+		}
 		if r.Key != "" {
 			created++
-			allRows = append(allRows, successStyle.Render("✓")+" "+
+			allRows = append(allRows, cur+successStyle.Render("✓")+" "+
 				dimStyle.Render(fmt.Sprintf("%-12s", r.Key))+" "+r.URL)
+			rowIdx++
 		} else if r.Err != nil {
 			failed++
-			allRows = append(allRows, errorStyle.Render("✗")+" "+
+			allRows = append(allRows, cur+errorStyle.Render("✗")+" "+
 				truncate(r.Ticket.Title, 36)+"  "+dimStyle.Render(r.Err.Error()))
+			rowIdx++
 		}
 	}
 
@@ -1624,7 +1679,7 @@ func (m model) viewDone() string {
 		scrollHint = dimStyle.Render("  ↓ more below")
 	}
 
-	footer := footerStyle.Width(w).Render("↑↓/jk scroll  •  q / Esc / Enter to exit")
+	footer := footerStyle.Width(w).Render("↑↓/jk scroll  •  o open URL  •  q / Esc / Enter to exit")
 
 	parts := []string{titleStyle.Render("✓ Done"), "", summary, "", strings.Join(visible, "\n")}
 	if scrollHint != "" {
@@ -1709,7 +1764,7 @@ func (m model) viewShowTickets() string {
 		rec := m.histRecords[m.histCursor]
 		footerText = errorStyle.Render(fmt.Sprintf("Delete %s %q? (y/N)", rec.JiraKey, truncate(rec.Title, 30)))
 	} else {
-		footerText = "↑↓/jk navigate  •  PgUp/PgDn jump  •  d delete  •  q / Esc to quit"
+		footerText = "↑↓/jk navigate  •  PgUp/PgDn jump  •  o open URL  •  d delete  •  q / Esc to quit"
 	}
 	parts = append(parts, footerStyle.Width(w).Render(footerText))
 
@@ -1780,4 +1835,18 @@ func maxInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// openURL launches url in the system default browser.
+func openURL(url string) error {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", url)
+	case "windows":
+		cmd = exec.Command("cmd", "/c", "start", url)
+	default:
+		cmd = exec.Command("xdg-open", url)
+	}
+	return cmd.Start()
 }
